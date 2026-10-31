@@ -97,6 +97,14 @@ export class Hub {
         return this.config.mods.includes("*") || this.config.mods.includes(userId);
     }
 
+    public hasUser(userId: string): boolean {
+        return !!this.store.db.users[userId];
+    }
+
+    public userCount(): number {
+        return Object.keys(this.store.db.users).length;
+    }
+
     /** get-or-create the user record for a websocket handshake */
     public ensureUser(userId: string, ip: string, platform: string, version: string): UserRecord {
         let user = this.store.db.users[userId];
@@ -491,6 +499,12 @@ export class Hub {
         }
         for (const [userId, at] of this.exportTimes) {
             if (now - at > 60 * 60 * 1000) this.exportTimes.delete(userId);
+        }
+        const retention = this.config.snapshotRetentionMs;
+        if (retention > 0) {
+            for (const [userId, snapshot] of Object.entries(this.store.db.snapshots)) {
+                if (now - snapshot.updatedAt > retention) delete this.store.db.snapshots[userId];
+            }
         }
         this.broadcast({ type: "streaming", users: this.streamingUsers() });
     }

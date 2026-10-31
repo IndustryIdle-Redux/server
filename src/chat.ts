@@ -57,6 +57,9 @@ export class ChatService {
         }
         this.lastSendAt.set(user.userId, now);
 
+        if (this.config.maxChatChannels > 0 && !this.store.db.chat[channel] && Object.keys(this.store.db.chat).length >= this.config.maxChatChannels) {
+            return "too many channels";
+        }
         const record: ChatRecord = {
             user: user.userName,
             userId: user.userId,

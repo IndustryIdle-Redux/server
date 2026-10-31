@@ -50,6 +50,10 @@ export function createServer(config: ServerConfig): RunningServer {
             return;
         }
         const ip = clientIp(req, config.trustForwardedFor);
+        if (!hub.hasUser(userId) && config.maxUsers > 0 && hub.userCount() >= config.maxUsers) {
+            ws.close(4004, "server full");
+            return;
+        }
         const user = hub.ensureUser(
             userId,
             ip,

@@ -33,6 +33,9 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
         exportMinIntervalMs: 0,
         leaderboardCacheMs: 0,
         requireTradeTokenProof: false,
+        maxUsers: 0,
+        maxChatChannels: 0,
+        snapshotRetentionMs: 0,
         trustAll: true,
         ...overrides,
     };

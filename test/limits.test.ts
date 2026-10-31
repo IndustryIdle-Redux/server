@@ -111,3 +111,53 @@ describe("WebSocket input limits", () => {
         await server.running.close();
     });
 });
+
+describe("data growth caps", () => {
+    it("refuses new users above maxUsers", async () => {
+        const server = await startTestServer({ maxUsers: 1 });
+        const first = await TestClient.connect(server.port, "first-user");
+        const second = new WebSocket(`ws://127.0.0.1:${server.port}/?user=second-user`);
+        const code = await new Promise<number>((resolve) => second.on("close", (c) => resolve(c)));
+        expect(code).toBe(4004);
+        expect(Object.keys(server.running.store.db.users)).toEqual(["first-user"]);
+        first.close();
+        await server.running.close();
+    });
+
+    it("stops creating new chat channels above maxChatChannels", async () => {
+        const server = await startTestServer({ maxChatChannels: 1 });
+        const client = await TestClient.connect(server.port, "chatter");
+        client.send({ type: "chat", message: "hi", channel: "en" });
+        await sleep(200);
+        client.send({ type: "chat", message: "hallo", channel: "de" });
+        await sleep(200);
+        expect(Object.keys(server.running.store.db.chat)).toEqual(["en"]);
+        client.close();
+        await server.running.close();
+    });
+
+    it("prunes stale leaderboard snapshots on the heartbeat", async () => {
+        const server = await startTestServer({ snapshotRetentionMs: 1000 });
+        const client = await TestClient.connect(server.port, "stale-user");
+        client.send({
+            type: "tick",
+            userName: "STALE",
+            flag: "earth",
+            dlc: 0,
+            map: "Stockholm",
+            cash: 1,
+            resourceValuation: 1,
+            buildingValuation: 1,
+            buildingCount: 1,
+            prestigeCurrency: 0,
+            allPrestigeCurrency: 0,
+        });
+        await sleep(200);
+        expect(server.running.store.db.snapshots["stale-user"]).toBeDefined();
+        server.running.store.db.snapshots["stale-user"].updatedAt = Date.now() - 10_000;
+        server.running.hub.heartbeat();
+        expect(server.running.store.db.snapshots["stale-user"]).toBeUndefined();
+        client.close();
+        await server.running.close();
+    });
+});

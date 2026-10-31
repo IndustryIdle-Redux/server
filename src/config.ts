@@ -75,6 +75,12 @@ export interface ServerConfig {
      * `/trade/history` (the in-repo client does not send the header yet; off by default)
      */
     requireTradeTokenProof: boolean;
+    /** maximum number of user records (0 = unlimited); new connections are refused above it */
+    maxUsers: number;
+    /** maximum number of chat channels kept (0 = unlimited) */
+    maxChatChannels: number;
+    /** drop leaderboard snapshots not updated for this long (0 = keep forever) */
+    snapshotRetentionMs: number;
     /**
      * trust new users by default (self-hosted: no platform verification available).
      *
@@ -106,6 +112,9 @@ const DEFAULTS: ServerConfig = {
     exportMinIntervalMs: 10_000,
     leaderboardCacheMs: 1000,
     requireTradeTokenProof: false,
+    maxUsers: 10_000,
+    maxChatChannels: 100,
+    snapshotRetentionMs: 90 * 24 * 60 * 60 * 1000,
     trustAll: true,
 };
 
@@ -169,6 +178,18 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
     if (process.env.REQUIRE_TRADE_TOKEN_PROOF !== undefined) {
         config.requireTradeTokenProof = /^(1|true|yes|on)$/i.test(process.env.REQUIRE_TRADE_TOKEN_PROOF.trim());
     }
+    if (process.env.MAX_USERS !== undefined) {
+        const n = Number(process.env.MAX_USERS);
+        if (Number.isFinite(n) && n >= 0) config.maxUsers = n;
+    }
+    if (process.env.MAX_CHAT_CHANNELS !== undefined) {
+        const n = Number(process.env.MAX_CHAT_CHANNELS);
+        if (Number.isFinite(n) && n >= 0) config.maxChatChannels = n;
+    }
+    if (process.env.SNAPSHOT_RETENTION_MS !== undefined) {
+        const n = Number(process.env.SNAPSHOT_RETENTION_MS);
+        if (Number.isFinite(n) && n >= 0) config.snapshotRetentionMs = n;
+    }
 
     // normalise whatever config.json contained so a typo cannot silently weaken the server
     config.host = typeof config.host === "string" && config.host.trim() ? config.host.trim() : DEFAULTS.host;
@@ -194,6 +215,13 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
             ? Math.min(config.leaderboardCacheMs, 60_000)
             : DEFAULTS.leaderboardCacheMs;
     config.requireTradeTokenProof = config.requireTradeTokenProof === true;
+    config.maxUsers = Number.isFinite(config.maxUsers) && config.maxUsers >= 0 ? Math.trunc(config.maxUsers) : DEFAULTS.maxUsers;
+    config.maxChatChannels =
+        Number.isFinite(config.maxChatChannels) && config.maxChatChannels >= 0 ? Math.trunc(config.maxChatChannels) : DEFAULTS.maxChatChannels;
+    config.snapshotRetentionMs =
+        Number.isFinite(config.snapshotRetentionMs) && config.snapshotRetentionMs >= 0
+            ? config.snapshotRetentionMs
+            : DEFAULTS.snapshotRetentionMs;
     config.port = Number.isFinite(config.port) && config.port >= 0 && config.port <= 65535 ? Math.trunc(config.port) : DEFAULTS.port;
     config.chatRateLimitMs =
         Number.isFinite(config.chatRateLimitMs) && config.chatRateLimitMs >= 0

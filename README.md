@@ -48,6 +48,9 @@ in `data/db.json`; exported save dumps are written to `data/saves/`.
 | `exportMinIntervalMs` | `EXPORT_MIN_INTERVAL_MS` | `10000` | Minimum interval between `export` uploads per user; `0` disables the quota |
 | `leaderboardCacheMs` | `LEADERBOARD_CACHE_MS` | `1000` | Response cache TTL for `/leaderboard/v4`; `0` disables the cache |
 | `requireTradeTokenProof` | `REQUIRE_TRADE_TOKEN_PROOF` | `false` | Require `X-Trade-Token` for `/trade/clear` and `/trade/history`; enable once your client sends it |
+| `maxUsers` | `MAX_USERS` | `10000` | Maximum user records; new connections above the cap are refused (4004); `0` = unlimited |
+| `maxChatChannels` | `MAX_CHAT_CHANNELS` | `100` | Maximum chat channels kept; `0` = unlimited |
+| `snapshotRetentionMs` | `SNAPSHOT_RETENTION_MS` | 90 days | Leaderboard snapshots not updated for this long are pruned on the heartbeat; `0` = keep forever |
 | `trustForwardedFor` | `TRUST_FORWARDED_FOR` | `false` | Use `X-Forwarded-For` as the client ip. Only enable behind a reverse proxy that overwrites it |
 | `trustAll` | | `true` | Treat new users as authenticated (self-hosted mode has no platform authentication) |
 
@@ -169,8 +172,9 @@ between the two sides until `cancelInit`, `reject` or `failed`.
    `trustForwardedFor` is enabled, in which case `X-Forwarded-For` is used and must be set by a
    trusted proxy. REST admin auth never depends on the forwarded header.
 6. Leaderboard definitions ("valuation per hour" etc.) are defined by this implementation.
-7. Self-hosting-only options: `staleTradeTtlMs`, `maxExportBytes`, loopback `host` default and an
-   empty `mods` default.
+7. Self-hosting-only options: `staleTradeTtlMs`, `maxExportBytes`, `maxWsPayloadBytes`,
+   `wsRateLimitPerSecond`, `exportMinIntervalMs`, `maxUsers`, `maxChatChannels`,
+   `snapshotRetentionMs`, loopback `host` default and an empty `mods` default.
 
 ## Security notes
 

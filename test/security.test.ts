@@ -31,7 +31,7 @@ import { TestClient, testConfig, tradeMessage } from "./helpers";
 /* ------------------------------------------------------------------ helpers */
 
 /** env vars loadConfig reads — snapshot/restore around each test */
-const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR", "MAX_WS_PAYLOAD_BYTES", "WS_RATE_LIMIT_PER_SECOND", "EXPORT_MIN_INTERVAL_MS", "LEADERBOARD_CACHE_MS", "REQUIRE_TRADE_TOKEN_PROOF"] as const;
+const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR", "MAX_WS_PAYLOAD_BYTES", "WS_RATE_LIMIT_PER_SECOND", "EXPORT_MIN_INTERVAL_MS", "LEADERBOARD_CACHE_MS", "REQUIRE_TRADE_TOKEN_PROOF", "MAX_USERS", "MAX_CHAT_CHANNELS", "SNAPSHOT_RETENTION_MS"] as const;
 
 function withoutEnv<T>(fn: () => T): T {
     const saved = new Map<string, string | undefined>();
@@ -108,11 +108,18 @@ describe("configuration defaults", () => {
         expect(config.port).toBe(5185);
         expect(config.chatRateLimitMs).toBe(3000);
         expect(config.leaderboardCacheMs).toBe(1000);
+        expect(config.maxUsers).toBe(10000);
+        expect(config.maxChatChannels).toBe(100);
         expect(config.maxWsPayloadBytes).toBe(10 * 1024 * 1024);
         expect(config.wsRateLimitPerSecond).toBe(50);
         expect(config.exportMinIntervalMs).toBe(10000);
         expect(config.leaderboardCacheMs).toBe(1000);
+        expect(config.maxUsers).toBe(10000);
+        expect(config.maxChatChannels).toBe(100);
         expect(config.requireTradeTokenProof).toBe(false);
+        expect(config.maxUsers).toBe(10000);
+        expect(config.maxChatChannels).toBe(100);
+        expect(config.snapshotRetentionMs).toBe(90 * 24 * 60 * 60 * 1000);
         expect(config.trustAll).toBe(true);
     });
 
@@ -129,6 +136,9 @@ describe("configuration defaults", () => {
             process.env.EXPORT_MIN_INTERVAL_MS = "500";
             process.env.LEADERBOARD_CACHE_MS = "250";
             process.env.REQUIRE_TRADE_TOKEN_PROOF = "true";
+            process.env.MAX_USERS = "42";
+            process.env.MAX_CHAT_CHANNELS = "3";
+            process.env.SNAPSHOT_RETENTION_MS = "1000";
             return loadConfig(cwd);
         });
         expect(config.host).toBe("0.0.0.0");
@@ -141,11 +151,14 @@ describe("configuration defaults", () => {
         expect(config.exportMinIntervalMs).toBe(500);
         expect(config.leaderboardCacheMs).toBe(250);
         expect(config.requireTradeTokenProof).toBe(true);
+        expect(config.maxUsers).toBe(42);
+        expect(config.maxChatChannels).toBe(3);
+        expect(config.snapshotRetentionMs).toBe(1000);
     });
 
     it("normalises a broken mods / maxExportBytes value instead of trusting it", () => {
         const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ii-config-"));
-        fs.writeFileSync(path.join(cwd, "config.json"), JSON.stringify({ mods: "*", maxExportBytes: -1, adminToken: 42, trustForwardedFor: "yes", port: "abc", chatRateLimitMs: "x", leaderboardCacheMs: -5 }));
+        fs.writeFileSync(path.join(cwd, "config.json"), JSON.stringify({ mods: "*", maxExportBytes: -1, adminToken: 42, trustForwardedFor: "yes", port: "abc", chatRateLimitMs: "x", leaderboardCacheMs: -5, maxUsers: "many", maxChatChannels: -1 }));
         const config = withoutEnv(() => loadConfig(cwd));
         expect(config.mods).toEqual([]);
         expect(config.maxExportBytes).toBe(DEFAULT_MAX_EXPORT_BYTES);
@@ -154,6 +167,8 @@ describe("configuration defaults", () => {
         expect(config.port).toBe(5185);
         expect(config.chatRateLimitMs).toBe(3000);
         expect(config.leaderboardCacheMs).toBe(1000);
+        expect(config.maxUsers).toBe(10000);
+        expect(config.maxChatChannels).toBe(100);
     });
 
     it("warns loudly about mods: ['*'] and about a non-loopback bind without ADMIN_TOKEN", () => {

@@ -14,5 +14,8 @@
     "wsRateLimitPerSecond": 50,
     "exportMinIntervalMs": 10000,
     "leaderboardCacheMs": 1000,
-    "requireTradeTokenProof": false
+    "requireTradeTokenProof": false,
+    "maxUsers": 10000,
+    "maxChatChannels": 100,
+    "snapshotRetentionMs": 7776000000
 }
