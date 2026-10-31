@@ -8,21 +8,23 @@
  * | status sent | meaning | preconditions | server action |
  * |---|---|---|---|
  * | `open` | place order (escrow is client side) | new id, sane numbers | add to book, broadcast `add`, reply `myTrades` |
- * | `filled` | take someone's open order | order open, not own | mark filled (`fillBy` = taker), broadcast `delete`, update maker's `myTrades` |
- * | `closed` | maker claims a filled order | owner only, status filled | settle → history, drop from `myTrades` |
- * | `cancelled` | maker cancels an open order | owner only, status open | broadcast `delete`, → history |
+ * | `filled` | take (part of) someone's open order | order open, not own, `amount` within the remainder | create a filled record for the maker, reduce the order, broadcast `add` (remaining) or `delete` (exhausted), update maker's `myTrades` |
+ * | `closed` | maker claims one filled record | owner only, status filled | settle that fill → history, drop it from `myTrades` |
+ * | `cancelled` | maker cancels the open remainder | owner only, status open | broadcast `delete`, → history |
  *
  * Every trade message must be echoed with its `id` so the awaiting `Socket.send`
  * promise resolves (or rejects via the `error` field).
  *
- * ⚠️ Amount semantics: the client applies its own "tax" before sending a taker's
- * `filled` message, so the taker's `amount` can be lower than the open order's.
- * The server keeps the **original open amount** as the canonical executed amount —
- * that is what the taker actually paid (`acceptTrade` deducts
- * `tradeBeforeTax.amount * price` = the open amount) and therefore exactly what the
- * maker must receive on `claimTrade`.
+ * Partial fills: an order can be taken by several players in sequence (the client has
+ * supported 0.1%–99.9% fills since the "partial fill" update). Each `filled` message
+ * reduces the open order by the taker's executed amount and creates a **separate filled
+ * record** in the maker's `myTrades`, keyed by a fresh server-generated id. The maker
+ * claims those records one by one; the original order stays open with the remaining
+ * amount until it is exhausted. Keeping one record per fill is what makes the client's
+ * `claimTrade` (one id per claim) work.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "./config";
 import { verifyTradeSignature } from "./hash";
 import type { Store, TradeRecord, UserRecord } from "./store";
@@ -200,7 +202,7 @@ export class TradeService {
             closedAt: null,
         };
         this.store.db.trades[record.id] = record;
-        this.store.markDirty();
+        this.store.saveTrade(record);
         this.sink.broadcast({ type: "trade", add: { [record.id]: this.toPublicTrade(record) } });
         return null;
     }
@@ -210,26 +212,61 @@ export class TradeService {
         msg: ITradeRequest & { id?: string },
         now: number
     ): Record<string, unknown> | null {
-        const record = this.store.db.trades[msg.id as string];
-        const error = !record
+        const order = this.store.db.trades[msg.id as string];
+        const error = !order
             ? "trade not found"
-            : record.status !== "open"
+            : order.status !== "open"
               ? "trade is not open"
-              : record.fromUserId === user.userId
+              : order.fromUserId === user.userId
                 ? "cannot fill your own trade"
                 : null;
         if (error) {
             return { type: "trade", id: msg.id, error };
         }
-        // keep the ORIGINAL amount: it is what the taker paid for (see module doc)
-        record.status = "filled";
-        record.fillBy = user.userName;
-        record.filledByUserId = user.userId;
-        record.filledAt = now;
-        this.store.markDirty();
-        // the order leaves the public book; the maker now has a claimable trade
-        this.sink.broadcast({ type: "trade", delete: { [record.id]: {} } });
-        this.sink.sendToUser(record.fromUserId, { type: "trade", myTrades: this.myTrades(record.fromUserId) });
+        const amount = typeof msg.amount === "number" && Number.isFinite(msg.amount) ? msg.amount : 0;
+        // the client refuses < 1 as well; allow filling the last sub-1 remainder of an order
+        const minFill = Math.min(1, order.amount);
+        if (amount < minFill - 1e-9 || amount > order.amount + 1e-9) {
+            return { type: "trade", id: msg.id, error: "invalid amount" };
+        }
+        const filled = Math.min(amount, order.amount);
+
+        // One claim record per fill: the maker claims these one by one, so the id must
+        // differ from the open order. The client only echoes it back in `closed`.
+        const fill: TradeRecord = {
+            id: randomUUID(),
+            type: "trade",
+            side: order.side,
+            resource: order.resource,
+            amount: filled,
+            price: order.price,
+            from: order.from,
+            fromUserHash: order.fromUserHash,
+            fromUserId: order.fromUserId,
+            fillBy: user.userName,
+            filledByUserId: user.userId,
+            status: "filled",
+            parentId: order.id,
+            createdAt: now,
+            openedAt: now,
+            filledAt: now,
+            closedAt: null,
+        };
+        this.store.db.trades[fill.id] = fill;
+        this.store.saveTrade(fill);
+
+        const remaining = order.amount - filled;
+        if (remaining <= 1e-9) {
+            // exhausted: the order leaves the public book (its fills carry the history)
+            delete this.store.db.trades[order.id];
+            this.store.deleteTrade(order.id);
+            this.sink.broadcast({ type: "trade", delete: { [order.id]: {} } });
+        } else {
+            order.amount = remaining;
+            this.store.saveTrade(order);
+            this.sink.broadcast({ type: "trade", add: { [order.id]: this.toPublicTrade(order) } });
+        }
+        this.sink.sendToUser(order.fromUserId, { type: "trade", myTrades: this.myTrades(order.fromUserId) });
         return null;
     }
 
@@ -281,12 +318,15 @@ export class TradeService {
     /** move a finished order out of the live tables into history */
     private settle(record: TradeRecord): void {
         delete this.store.db.trades[record.id];
-        this.store.db.history.push({ ...record, closedAt: record.closedAt ?? Date.now() });
+        this.store.deleteTrade(record.id);
+        const historyRecord = { ...record, closedAt: record.closedAt ?? Date.now() };
+        this.store.db.history.push(historyRecord);
+        this.store.appendHistory(historyRecord);
         // keep history bounded
         if (this.store.db.history.length > 50_000) {
             this.store.db.history.splice(0, this.store.db.history.length - 50_000);
+            this.store.pruneHistory(50_000);
         }
-        this.store.markDirty();
         this.sink.sendToUser(record.fromUserId, { type: "trade", myTrades: this.myTrades(record.fromUserId) });
     }
 

@@ -30,10 +30,11 @@ export class ChatService {
     public mute(ip: string, timeMs: number): void {
         if (timeMs > 0) {
             this.store.db.mutes[ip] = Date.now() + timeMs;
+            this.store.saveMute(ip);
         } else {
             delete this.store.db.mutes[ip];
+            this.store.deleteMute(ip);
         }
-        this.store.markDirty();
     }
 
     public history(channel: string, limit = 100): ChatRecord[] {
@@ -75,7 +76,7 @@ export class ChatService {
         if (list.length > this.config.chatHistorySize) {
             list.splice(0, list.length - this.config.chatHistorySize);
         }
-        this.store.markDirty();
+        this.store.saveChatChannel(channel);
         return record;
     }
 }

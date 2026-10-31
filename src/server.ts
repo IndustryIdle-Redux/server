@@ -99,7 +99,7 @@ export function createServer(config: ServerConfig): RunningServer {
             closed = true;
             clearInterval(heartbeat);
             if (sweep) clearInterval(sweep);
-            store.flushSync();
+            store.close();
             for (const client of wss.clients) client.terminate();
             wss.close(() => {
                 server.close(() => resolve());

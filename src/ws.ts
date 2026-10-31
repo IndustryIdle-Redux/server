@@ -137,10 +137,11 @@ export class Hub {
             };
             this.store.db.users[userId] = user;
             this.userCountValue++;
-            this.store.markDirty();
+            this.store.saveUser(user);
         } else {
             user.lastSeenAt = Date.now();
             user.ip = ip;
+            this.store.saveUser(user);
         }
         return user;
     }
@@ -324,6 +325,7 @@ export class Hub {
         if (typeof result === "string") {
             return; // rate-limited / muted / invalid: silently dropped (the client sends without `id`)
         }
+        this.store.saveUser(user);
         for (const set of this.conns.values()) {
             for (const target of set) {
                 if (target.channel === result.channel) {
@@ -365,7 +367,9 @@ export class Hub {
         user.flag = flag;
         user.dlc = boundedInt(msg.dlc, 0, 100, user.dlc);
         user.lastSeenAt = Date.now();
-        this.store.markDirty();
+        this.store.saveUser(user);
+        const snapshot = this.store.db.snapshots[user.userId];
+        if (snapshot) this.store.saveSnapshot(snapshot);
         // heartbeat: the client force-reconnects when it receives nothing for ~70s,
         // so answer every tick with an idempotent state push
         conn.send(this.decorate({ type: "streaming", users: this.streamingUsers() }, conn));
@@ -378,6 +382,7 @@ export class Hub {
         if (!pledge || typeof pledge !== "object" || Array.isArray(pledge)) return;
         const entries = Object.entries(pledge as Record<string, unknown>);
         if (entries.length > 256) return;
+        const changed = new Set<string>();
         // aggregate by `${projectId}.${index}` (see CrowdfundingPage: `G.socket.pledge[id + "." + index]`)
         for (const [rawProjectId, list] of entries) {
             // reject overlong ids instead of truncating: truncation would merge unrelated projects
@@ -394,9 +399,10 @@ export class Hub {
                 const key = `${projectId}.${index}`;
                 if (this.store.db.pledges[key] === undefined && Object.keys(this.store.db.pledges).length >= 10_000) continue;
                 this.store.db.pledges[key] = (this.store.db.pledges[key] ?? 0) + amount;
+                changed.add(key);
             }
         }
-        this.store.markDirty();
+        for (const key of changed) this.store.savePledge(key);
         // full replacement record (the client assigns `this.pledge = resp.pledge`)
         conn.send(this.decorate({ type: "pledge", id: msg.id, pledge: { ...this.store.db.pledges } }, conn));
     }
@@ -451,7 +457,7 @@ export class Hub {
     public setStreaming(user: UserRecord, on: boolean): { streaming: boolean; token?: string } {
         if (!on) {
             delete this.store.db.streams[user.userId];
-            this.store.markDirty();
+            this.store.deleteStream(user.userId);
             this.broadcast({ type: "streaming", users: this.streamingUsers() });
             return { streaming: false };
         }
@@ -464,7 +470,7 @@ export class Hub {
         };
         record.user = { name: user.userName, dlc: user.dlc, flag: user.flag };
         this.store.db.streams[user.userId] = record;
-        this.store.markDirty();
+        this.store.saveStream(record);
         this.broadcast({ type: "streaming", users: this.streamingUsers() });
         return { streaming: true, token: record.token };
     }
@@ -514,7 +520,10 @@ export class Hub {
         const retention = this.config.snapshotRetentionMs;
         if (retention > 0) {
             for (const [userId, snapshot] of Object.entries(this.store.db.snapshots)) {
-                if (now - snapshot.updatedAt > retention) delete this.store.db.snapshots[userId];
+                if (now - snapshot.updatedAt > retention) {
+                    delete this.store.db.snapshots[userId];
+                    this.store.deleteSnapshot(userId);
+                }
             }
         }
         this.broadcast({ type: "streaming", users: this.streamingUsers() });

@@ -129,13 +129,13 @@ describe("TradeService", () => {
         expect(alice.tradeToken).toBe("brand-new-token");
     });
 
-    it("fills an order keeping the ORIGINAL amount (the taker's tax is client side)", () => {
+    it("partially fills an order: the remainder stays open and the fill becomes a claim record", () => {
         open(alice);
         const fill = tradeMessage("bob", {
             id: "o1",
             side: "sell",
             resource: "Fe",
-            amount: 90, // taker's tax-reduced amount — must NOT become canonical
+            amount: 40, // taker's tax-reduced amount = what bob actually pays
             price: 5,
             token: "bob-token",
             status: "filled",
@@ -143,30 +143,75 @@ describe("TradeService", () => {
         });
         const reply = ctx.service.handleMessage(bob, fill as never);
         expect(reply.error).toBeUndefined();
-        expect(ctx.store.db.trades.o1.status).toBe("filled");
-        expect(ctx.store.db.trades.o1.amount).toBe(100);
-        expect(ctx.store.db.trades.o1.fillBy).toBe("BOB");
-        expect(ctx.service.activeTrades().o1).toBeUndefined();
-        expect(ctx.broadcasts.some((b) => (b.delete as any)?.o1)).toBe(true);
-        // the maker gets the updated claimable trade
+        expect(ctx.store.db.trades.o1.status).toBe("open");
+        expect(ctx.store.db.trades.o1.amount).toBe(60);
+        expect(ctx.service.activeTrades().o1.amount).toBe(60);
+        expect(ctx.broadcasts.some((b) => (b.add as any)?.o1?.amount === 60)).toBe(true);
+        // bob's reply does not contain a fill record (fills belong to the maker)
+        expect(reply.myTrades).toEqual({});
+        // the maker sees the reduced order plus one claimable fill
         const toAlice = ctx.sent.filter((s) => s.userId === "alice").pop()!;
-        expect((toAlice.message.myTrades as any).o1.status).toBe("filled");
+        const aliceTrades = toAlice.message.myTrades as Record<string, any>;
+        expect(aliceTrades.o1.status).toBe("open");
+        expect(aliceTrades.o1.amount).toBe(60);
+        const fillRecord = Object.values(aliceTrades).find((t: any) => t.status === "filled")!;
+        expect(fillRecord.id).not.toBe("o1");
+        expect(fillRecord.amount).toBe(40);
+        expect(fillRecord.fillBy).toBe("BOB");
     });
 
-    it("rejects self-fill and double-fill", () => {
+    it("lets two users fill the same order and claims each fill separately", () => {
+        const carol = makeUser(ctx.store, "carol", "carol-token");
+        open(alice);
+        ctx.service.handleMessage(bob, tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 40, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" }) as never);
+        expect(ctx.store.db.trades.o1.amount).toBe(60);
+        ctx.service.handleMessage(carol, tradeMessage("carol", { id: "o1", side: "sell", resource: "Fe", amount: 60, price: 5, token: "carol-token", status: "filled", fillBy: "CAROL" }) as never);
+        // exhausted: the order is gone and the second fill was broadcast as a delete
+        expect(ctx.store.db.trades.o1).toBeUndefined();
+        expect(ctx.service.activeTrades()).toEqual({});
+        expect(ctx.broadcasts.some((b) => (b.delete as any)?.o1)).toBe(true);
+
+        const claims = Object.values(ctx.service.myTrades("alice")).filter((t) => t.status === "filled");
+        expect(claims).toHaveLength(2);
+        expect(claims.map((c) => c.amount).sort((a, b) => a - b)).toEqual([40, 60]);
+        expect(claims.map((c) => c.fillBy).sort()).toEqual(["BOB", "CAROL"]);
+
+        // claim the first fill; the second stays claimable
+        const first = claims.find((c) => c.fillBy === "BOB")!;
+        const close = signTrade({ ...first, status: "closed", token: "alice-token" });
+        const reply = ctx.service.handleMessage(alice, close as never);
+        expect(reply.error).toBeUndefined();
+        expect(Object.values(ctx.service.myTrades("alice")).filter((t) => t.status === "filled")).toHaveLength(1);
+        // claim the second fill
+        const second = Object.values(ctx.service.myTrades("alice")).find((t) => t.status === "filled")!;
+        const close2 = signTrade({ ...second, status: "closed", token: "alice-token" });
+        expect(ctx.service.handleMessage(alice, close2 as never).error).toBeUndefined();
+        expect(ctx.service.myTrades("alice")).toEqual({});
+        const history = ctx.service.history("alice");
+        expect(history).toHaveLength(2);
+        expect(history.reduce((sum, h) => sum + h.amount, 0)).toBe(100);
+    });
+
+    it("rejects self-fill, over-fill and filling a non-open order", () => {
         open(alice);
         const selfFill = tradeMessage("alice", { id: "o1", side: "sell", resource: "Fe", amount: 100, price: 5, token: "alice-token", status: "filled", fillBy: "ALICE" });
         expect(ctx.service.handleMessage(alice, selfFill as never).error).toBe("cannot fill your own trade");
-        const fill = tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 100, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" });
-        ctx.service.handleMessage(bob, fill as never);
-        expect(ctx.service.handleMessage(bob, fill as never).error).toBe("trade is not open");
+        const overFill = tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 101, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" });
+        expect(ctx.service.handleMessage(bob, overFill as never).error).toBe("invalid amount");
+        const tinyFill = tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 0.5, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" });
+        expect(ctx.service.handleMessage(bob, tinyFill as never).error).toBe("invalid amount");
+        const fullFill = tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 100, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" });
+        expect(ctx.service.handleMessage(bob, fullFill as never).error).toBeUndefined();
+        expect(ctx.service.handleMessage(bob, fullFill as never).error).toBe("trade not found");
     });
 
     it("claims (close) settle to history and clear myTrades", () => {
         open(alice);
         const fill = tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 100, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" });
         ctx.service.handleMessage(bob, fill as never);
-        const close = signTrade({ ...ctx.service.myTrades("alice").o1, status: "closed", token: "alice-token" });
+        const claim = Object.values(ctx.service.myTrades("alice")).find((t) => t.status === "filled")!;
+        expect(claim).toBeDefined();
+        const close = signTrade({ ...claim, status: "closed", token: "alice-token" });
         const reply = ctx.service.handleMessage(alice, close as never);
         expect(reply.error).toBeUndefined();
         expect(Object.keys(reply.myTrades as object)).toHaveLength(0);
@@ -181,7 +226,8 @@ describe("TradeService", () => {
         open(alice);
         const fill = tradeMessage("bob", { id: "o1", side: "sell", resource: "Fe", amount: 100, price: 5, token: "bob-token", status: "filled", fillBy: "BOB" });
         ctx.service.handleMessage(bob, fill as never);
-        const close = signTrade({ ...ctx.service.myTrades("alice").o1, status: "closed", token: "bob-token", fromUserId: "bob" });
+        const claim = Object.values(ctx.service.myTrades("alice")).find((t) => t.status === "filled")!;
+        const close = signTrade({ ...claim, status: "closed", token: "bob-token", fromUserId: "bob" });
         expect(ctx.service.handleMessage(bob, close as never).error).toBe("not your trade");
     });
 

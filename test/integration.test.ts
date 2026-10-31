@@ -134,7 +134,7 @@ describe("trades over the wire", () => {
         const added = await bob.waitType("trade", (m) => m.add && m.add["trade-1"]);
         expect(added.add["trade-1"].price).toBe(7);
 
-        // bob fills it (his tax-reduced amount must NOT become canonical)
+        // bob partially fills it: the remainder stays open and a claim record is created
         const fill = tradeMessage("bob", {
             id: "trade-1",
             side: "sell",
@@ -150,21 +150,29 @@ describe("trades over the wire", () => {
         const fillReply = await bob.request(fill);
         expect(fillReply.error).toBeUndefined();
 
-        const removed = await bob.waitType("trade", (m) => m.delete && m.delete["trade-1"]);
-        expect(removed.delete["trade-1"]).toBeDefined();
-        const claimable = await alice.waitType("trade", (m) => m.myTrades && m.myTrades["trade-1"]?.status === "filled");
-        expect(claimable.myTrades["trade-1"].amount).toBe(100); // original amount kept
-        expect(claimable.myTrades["trade-1"].fillBy).toBe("BOB");
+        const updated = await bob.waitType("trade", (m) => m.add && m.add["trade-1"]?.amount === 5);
+        expect(updated.add["trade-1"].status).toBe("open");
+        const claimable = await alice.waitType(
+            "trade",
+            (m) => m.myTrades && Object.values(m.myTrades).some((t: any) => t.status === "filled")
+        );
+        expect(claimable.myTrades["trade-1"].amount).toBe(5); // remaining open amount
+        const fillTrade = Object.values(claimable.myTrades).find((t: any) => t.status === "filled") as any;
+        expect(fillTrade.amount).toBe(95);
+        expect(fillTrade.fillBy).toBe("BOB");
+        expect(fillTrade.id).not.toBe("trade-1");
 
-        // alice claims
-        const claim = signTrade({ ...claimable.myTrades["trade-1"], status: "closed", token: "alice-wire-token" });
-        const claimReply = await alice.request({ ...claim, id: "trade-1" } as never);
+        // alice claims the fill; the open remainder stays in myTrades
+        const claim = signTrade({ ...fillTrade, status: "closed", token: "alice-wire-token" });
+        const claimReply = await alice.request({ ...claim, id: fillTrade.id } as never);
         expect(claimReply.error).toBeUndefined();
-        expect(Object.keys(claimReply.myTrades)).toHaveLength(0);
+        expect(claimReply.myTrades["trade-1"].status).toBe("open");
+        expect(Object.values(claimReply.myTrades).some((t: any) => t.status === "filled")).toBe(false);
 
         const history = await (await rest("/trade/history", {}, "alice")).json();
         expect(history).toHaveLength(1);
         expect(history[0].fillBy).toBe("BOB");
+        expect(history[0].amount).toBe(95);
         expect(history[0].timestamp).toBeGreaterThan(0);
         void before;
         alice.close();

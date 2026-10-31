@@ -29,7 +29,7 @@ export interface ServerConfig {
     /** HTTP + WebSocket listen port (both protocols share one port) */
     port: number;
     host: string;
-    /** directory for db.json / exported saves */
+    /** directory for db.sqlite / exported saves */
     dataDir: string;
     /** secret suffix used by the client's `signTrade`; must match the client */
     saveFileKey: string;

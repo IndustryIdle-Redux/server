@@ -236,7 +236,7 @@ export async function handleRest(
             if (!requireUser(res, userId)) return;
             const user = store.db.users[userId] ?? hub.ensureUser(userId, clientIp(req, config.trustForwardedFor), url.searchParams.get("platform") ?? "web", url.searchParams.get("version") ?? "");
             user.authenticated = true;
-            store.markDirty();
+            store.saveUser(user);
             return text(res, 200, "ok");
         }
         if (p === "/user/verification" && method === "POST") {
@@ -314,14 +314,18 @@ function importToken(store: Store, userId: string, token: string, proof: string)
         if (owner) return { status: 200, token: rotateToken(store, owner) };
         // stale mapping without a user record: fall through and repair it for the caller
         delete store.db.tokens[token];
+        store.deleteToken(token);
     }
     const user = store.db.users[userId];
     if (!store.hasBoundToken(userId)) {
         // no token bound yet → first import, safe to bind
         const fresh = randomUUID();
         store.db.tokens[fresh] = userId;
-        if (user) user.tradeToken = fresh;
-        store.markDirty();
+        store.saveToken(fresh, userId);
+        if (user) {
+            user.tradeToken = fresh;
+            store.saveUser(user);
+        }
         return { status: 200, token: fresh };
     }
     if (!user || !constantTimeEqual(proof, user.tradeToken)) {
@@ -337,10 +341,14 @@ function importToken(store: Store, userId: string, token: string, proof: string)
 /** revoke `user`'s current token and bind a fresh one (only called after proof of ownership) */
 function rotateToken(store: Store, user: UserRecord): string {
     const fresh = randomUUID();
-    if (user.tradeToken) delete store.db.tokens[user.tradeToken];
+    if (user.tradeToken) {
+        delete store.db.tokens[user.tradeToken];
+        store.deleteToken(user.tradeToken);
+    }
     user.tradeToken = fresh;
     store.db.tokens[fresh] = user.userId;
-    store.markDirty();
+    store.saveToken(fresh, user.userId);
+    store.saveUser(user);
     return fresh;
 }
 
@@ -352,7 +360,7 @@ function rotateToken(store: Store, user: UserRecord): string {
 function restoreToken(store: Store, user: UserRecord): void {
     if (store.db.tokens[user.tradeToken] !== user.userId) {
         store.db.tokens[user.tradeToken] = user.userId;
-        store.markDirty();
+        store.saveToken(user.tradeToken, user.userId);
     }
 }
 

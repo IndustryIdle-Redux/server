@@ -4,7 +4,7 @@ Self-hosted server for the game's online features: player trading (P2P order boo
 chat, crowdfunding aggregation and the WebRTC streaming signalling relay. It is wire-compatible
 with the game client's online protocol (`Socket.ts` and the related REST endpoints).
 
-Single process, one port for HTTP and WebSocket, JSON-file persistence, one runtime dependency (`ws`).
+Single process, one port for HTTP and WebSocket, SQLite persistence (`node:sqlite`, WAL), one runtime dependency (`ws`).
 
 ## Quick start
 
@@ -24,18 +24,25 @@ npm run typecheck
 npm run build      # bundles dist/server.js only
 ```
 
-Node 20 or newer.
+Node 24 or newer (for an unflagged `node:sqlite`).
+
+## Persistence
+
+The database lives in `data/db.sqlite` (SQLite with WAL). The server keeps the working set in memory
+and writes only the rows changed by a mutation, batched in one transaction every 500 ms; there is
+no full-database rewrite. To back up a running server, copy `db.sqlite` together with its `-wal`
+file, or use SQLite's backup / `VACUUM INTO` while the server is stopped.
 
 ## Configuration
 
 Copy `config.example.json` to `config.json` (optional; environment variables override it). Data lives
-in `data/db.json`; exported save dumps are written to `data/saves/`.
+in `data/db.sqlite`; exported save dumps are written to `data/saves/`.
 
 | Key | Environment variable | Default | Notes |
 |---|---|---|---|
 | `port` | `PORT` | `5185` | Shared by HTTP and WebSocket |
 | `host` | `HOST` | `127.0.0.1` | Loopback only. Exposing it on a LAN/public network requires changing it explicitly **and** setting `ADMIN_TOKEN` |
-| `dataDir` | `DATA_DIR` | `data` | Directory for `db.json` and `saves/` |
+| `dataDir` | `DATA_DIR` | `data` | Directory for `db.sqlite` and `saves/` |
 | `saveFileKey` | `SAVE_FILE_KEY` | empty | Must match the game client's `SAVE_FILE_KEY`; both default to empty |
 | `mods` | `MODS` | `[]` | Moderator userIds (in-game mod flag, and admin routes when no `ADMIN_TOKEN` is set); `["*"]` makes everyone a moderator (dangerous, warned at startup) |
 | `adminToken` | `ADMIN_TOKEN` | empty | Shared secret for the admin endpoints; when set, `/trade/remove` and `/chat/mute` require `X-Admin-Token` |
@@ -121,12 +128,14 @@ asynchronously so a large dump cannot block other connections.
 | Status | Meaning | Server action |
 |---|---|---|
 | `open` | Order placed (escrow is held by the client) | Added to the book, `add` broadcast, `myTrades` reply |
-| `filled` | Someone takes the order | Marked filled, `delete` broadcast, maker gets updated `myTrades` |
-| `closed` | Maker collects the proceeds | Moved to history |
-| `cancelled` | Maker cancels | `delete` broadcast, moved to history |
+| `filled` | A player takes all or part of an open order | Creates a **separate filled record** for the maker, reduces the open order, broadcasts `add` (remaining) or `delete` (exhausted), updates the maker's `myTrades` |
+| `closed` | Maker claims one filled record | That fill is moved to history and removed from `myTrades` |
+| `cancelled` | Maker cancels the open remainder | `delete` broadcast, remainder moved to history |
 
-The server keeps the original open-order amount as the filled amount, because that is what the taker
-paid and what the maker collects.
+Partial fills are supported: one order can be filled by several players in sequence. Each fill is
+recorded as its own claim in the maker's `myTrades`, keyed by a server-generated id, because the
+client's `claimTrade` works on one id at a time. The open order keeps the remaining amount until it
+is exhausted.
 
 ### Stale order sweeping
 
