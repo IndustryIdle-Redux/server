@@ -1,0 +1,13 @@
+{
+    "port": 5185,
+    "host": "127.0.0.1",
+    "dataDir": "data",
+    "saveFileKey": "",
+    "mods": [],
+    "adminToken": "",
+    "chatRateLimitMs": 3000,
+    "chatHistorySize": 200,
+    "staleTradeTtlMs": 0,
+    "maxExportBytes": 8388608,
+    "trustAll": true
+}

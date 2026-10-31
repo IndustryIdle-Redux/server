@@ -1,0 +1,32 @@
+{
+    "name": "industry-idle-server",
+    "version": "1.0.0",
+    "description": "Self-hosted trade / leaderboard / chat server for Industry Idle (WebSocket + REST, wire-compatible with src/net/Socket.ts)",
+    "type": "module",
+    "main": "dist/server.js",
+    "license": "GPL-3.0-only",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/IndustryIdle-Redux/server.git"
+    },
+    "scripts": {
+        "build": "node build.mjs",
+        "start": "npm run build && node dist/server.js",
+        "dev": "npm run build && node dist/server.js",
+        "test": "vitest run",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "ws": "^8.18.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.14.0",
+        "@types/ws": "^8.5.10",
+        "esbuild": "^0.25.0",
+        "typescript": "^5.4.0",
+        "vitest": "^2.1.8"
+    },
+    "engines": {
+        "node": ">=20"
+    }
+}

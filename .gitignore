@@ -1,0 +1,13 @@
+# Runtime data: the JSON store keeps user ids, trade tokens, chat history and player
+# snapshots — it must never be committed.
+data/
+
+# Local configuration (copied from config.example.json); may contain ADMIN_TOKEN.
+config.json
+
+# Build output and dependencies
+dist/
+node_modules/
+
+*.log
+.DS_Store
