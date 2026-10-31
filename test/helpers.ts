@@ -27,6 +27,7 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
         chatHistorySize: 200,
         staleTradeTtlMs: 0,
         maxExportBytes: DEFAULT_MAX_EXPORT_BYTES,
+        trustForwardedFor: false,
         trustAll: true,
         ...overrides,
     };

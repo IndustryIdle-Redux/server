@@ -43,6 +43,7 @@ in `data/db.json`; exported save dumps are written to `data/saves/`.
 | `chatHistorySize` | | `200` | Chat history entries kept per channel |
 | `staleTradeTtlMs` | | `0` (off) | Sweep open orders older than this; see the caveat below |
 | `maxExportBytes` | `MAX_EXPORT_BYTES` | `8388608` (8 MiB) | Maximum size of a WS `export` save dump; `0` = unlimited |
+| `trustForwardedFor` | `TRUST_FORWARDED_FOR` | `false` | Use `X-Forwarded-For` as the client ip. Only enable behind a reverse proxy that overwrites it |
 | `trustAll` | | `true` | Treat new users as authenticated (self-hosted mode has no platform authentication) |
 
 On startup the server prints the effective host, moderators, admin token state, export cap and
@@ -77,7 +78,9 @@ The two admin routes are `POST /trade/remove?id=` (delete an order) and `POST /c
 - Loopback is decided from the socket's real remote address, never from `X-Forwarded-For`.
 
 To expose the server: set `host` to `0.0.0.0` (or `::`), set `ADMIN_TOKEN`, keep `mods` empty, and put
-a reverse proxy in front that overwrites `X-Forwarded-For` and limits request sizes and rates.
+a reverse proxy in front that overwrites `X-Forwarded-For` and limits request sizes and rates. Set
+`TRUST_FORWARDED_FOR=1` only if that proxy overwrites the header; otherwise the server uses the socket
+address and ignores it.
 
 ## WebSocket protocol
 
@@ -149,8 +152,9 @@ between the two sides until `cancelInit`, `reject` or `failed`.
 3. Trade tokens are proven by the token itself; `/trade/force-restore` and `/trade/import-save`
    accept `X-Trade-Token`.
 4. It never issues anti-cheat fines, never force-logs-out and does not call platform checks.
-5. Chat is muted by ip and rate-limited per user; `ip` prefers `X-Forwarded-For`, which is not
-   trustworthy behind a proxy. REST admin auth is unaffected by it.
+5. Chat is muted by ip and rate-limited per user. The client ip comes from the socket unless
+   `trustForwardedFor` is enabled, in which case `X-Forwarded-For` is used and must be set by a
+   trusted proxy. REST admin auth never depends on the forwarded header.
 6. Leaderboard definitions ("valuation per hour" etc.) are defined by this implementation.
 7. Self-hosting-only options: `staleTradeTtlMs`, `maxExportBytes`, loopback `host` default and an
    empty `mods` default.

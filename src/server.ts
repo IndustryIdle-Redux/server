@@ -9,6 +9,7 @@ import http from "node:http";
 import path from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { ServerConfig } from "./config";
+import { clientIp } from "./ip";
 import { handleRest } from "./rest";
 import { Store } from "./store";
 import { Hub, type LiveConn } from "./ws";
@@ -48,7 +49,7 @@ export function createServer(config: ServerConfig): RunningServer {
             ws.close(4001, "missing user");
             return;
         }
-        const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "");
+        const ip = clientIp(req, config.trustForwardedFor);
         const user = hub.ensureUser(
             userId,
             ip,

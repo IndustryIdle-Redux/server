@@ -31,7 +31,7 @@ import { TestClient, testConfig, tradeMessage } from "./helpers";
 /* ------------------------------------------------------------------ helpers */
 
 /** env vars loadConfig reads — snapshot/restore around each test */
-const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES"] as const;
+const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR"] as const;
 
 function withoutEnv<T>(fn: () => T): T {
     const saved = new Map<string, string | undefined>();
@@ -104,6 +104,7 @@ describe("configuration defaults", () => {
         expect(config.adminToken).toBe("");
         expect(config.staleTradeTtlMs).toBe(0);
         expect(config.maxExportBytes).toBe(DEFAULT_MAX_EXPORT_BYTES);
+        expect(config.trustForwardedFor).toBe(false);
         expect(config.trustAll).toBe(true);
     });
 
@@ -114,21 +115,24 @@ describe("configuration defaults", () => {
             process.env.MODS = "alice, bob";
             process.env.ADMIN_TOKEN = "s3cret";
             process.env.MAX_EXPORT_BYTES = "1024";
+            process.env.TRUST_FORWARDED_FOR = "true";
             return loadConfig(cwd);
         });
         expect(config.host).toBe("0.0.0.0");
         expect(config.mods).toEqual(["alice", "bob"]);
         expect(config.adminToken).toBe("s3cret");
         expect(config.maxExportBytes).toBe(1024);
+        expect(config.trustForwardedFor).toBe(true);
     });
 
     it("normalises a broken mods / maxExportBytes value instead of trusting it", () => {
         const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ii-config-"));
-        fs.writeFileSync(path.join(cwd, "config.json"), JSON.stringify({ mods: "*", maxExportBytes: -1, adminToken: 42 }));
+        fs.writeFileSync(path.join(cwd, "config.json"), JSON.stringify({ mods: "*", maxExportBytes: -1, adminToken: 42, trustForwardedFor: "yes" }));
         const config = withoutEnv(() => loadConfig(cwd));
         expect(config.mods).toEqual([]);
         expect(config.maxExportBytes).toBe(DEFAULT_MAX_EXPORT_BYTES);
         expect(config.adminToken).toBe("");
+        expect(config.trustForwardedFor).toBe(false);
     });
 
     it("warns loudly about mods: ['*'] and about a non-loopback bind without ADMIN_TOKEN", () => {
@@ -141,6 +145,9 @@ describe("configuration defaults", () => {
 
         // with a token configured the remote deploy is fine
         expect(configWarnings(testConfig({ mods: [], host: "0.0.0.0", adminToken: "x" }))).toEqual([]);
+
+        const trustXff = configWarnings(testConfig({ trustForwardedFor: true }));
+        expect(trustXff.some((w) => w.includes("X-Forwarded-For"))).toBe(true);
 
         // mods + token: the token is the credential, warn that the list does not grant admin
         const both = configWarnings(testConfig({ mods: ["alice"], host: "0.0.0.0", adminToken: "x" }));

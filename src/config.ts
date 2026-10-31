@@ -58,6 +58,11 @@ export interface ServerConfig {
     /** max size in bytes of a WS `export` save dump; larger payloads are rejected (0 = unlimited) */
     maxExportBytes: number;
     /**
+     * trust `X-Forwarded-For` for the client ip (chat mutes, stored user ip).
+     * Only enable this behind a reverse proxy that overwrites the header.
+     */
+    trustForwardedFor: boolean;
+    /**
      * trust new users by default (self-hosted: no platform verification available).
      *
      * Only affects the verification result: `authenticated` is initialised to this
@@ -82,6 +87,7 @@ const DEFAULTS: ServerConfig = {
     chatHistorySize: 200,
     staleTradeTtlMs: 0,
     maxExportBytes: DEFAULT_MAX_EXPORT_BYTES,
+    trustForwardedFor: false,
     trustAll: true,
 };
 
@@ -123,6 +129,9 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
         const n = Number(process.env.MAX_EXPORT_BYTES);
         if (Number.isFinite(n) && n >= 0) config.maxExportBytes = n;
     }
+    if (process.env.TRUST_FORWARDED_FOR !== undefined) {
+        config.trustForwardedFor = /^(1|true|yes|on)$/i.test(process.env.TRUST_FORWARDED_FOR.trim());
+    }
 
     // normalise whatever config.json contained so a typo cannot silently weaken the server
     config.host = typeof config.host === "string" && config.host.trim() ? config.host.trim() : DEFAULTS.host;
@@ -130,6 +139,7 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
     config.adminToken = typeof config.adminToken === "string" ? config.adminToken : "";
     config.maxExportBytes = Number.isFinite(config.maxExportBytes) && config.maxExportBytes >= 0 ? config.maxExportBytes : DEFAULTS.maxExportBytes;
     config.staleTradeTtlMs = Number.isFinite(config.staleTradeTtlMs) && config.staleTradeTtlMs > 0 ? config.staleTradeTtlMs : 0;
+    config.trustForwardedFor = config.trustForwardedFor === true;
     // an empty key is a valid configuration (the client ships with an empty default too),
     // but both sides must agree on it
     config.saveFileKey = typeof config.saveFileKey === "string" ? config.saveFileKey : "";
@@ -157,6 +167,12 @@ export function configWarnings(config: ServerConfig): string[] {
         warnings.push(
             `mods is set to [${config.mods.join(", ")}] while ADMIN_TOKEN is configured: the admin endpoints require the ` +
                 "token; the mods list only controls the in-game moderator flag."
+        );
+    }
+    if (config.trustForwardedFor) {
+        warnings.push(
+            "trustForwardedFor is enabled: the client ip is taken from X-Forwarded-For, which the caller can forge. " +
+                "Only enable this behind a reverse proxy that overwrites the header."
         );
     }
     if (!isLoopbackHost(config.host) && !config.adminToken) {

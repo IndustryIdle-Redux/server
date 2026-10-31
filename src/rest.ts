@@ -37,6 +37,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isLoopbackAddress, type ServerConfig } from "./config";
+import { clientIp } from "./ip";
 import { computeBoard } from "./leaderboard";
 import type { Store, UserRecord } from "./store";
 import type { Hub } from "./ws";
@@ -203,7 +204,7 @@ export async function handleRest(
 
         /* ---------------- users ---------------- */
         if (p === "/user/authentication" && method === "POST") {
-            const user = store.db.users[userId] ?? hub.ensureUser(userId, ipOf(req), url.searchParams.get("platform") ?? "web", url.searchParams.get("version") ?? "");
+            const user = store.db.users[userId] ?? hub.ensureUser(userId, clientIp(req, config.trustForwardedFor), url.searchParams.get("platform") ?? "web", url.searchParams.get("version") ?? "");
             user.authenticated = true;
             store.markDirty();
             return text(res, 200, "ok");
@@ -236,7 +237,7 @@ export async function handleRest(
 
         /* ---------------- streaming ---------------- */
         if (p === "/stream" && method === "POST") {
-            const user = store.db.users[userId] ?? hub.ensureUser(userId, ipOf(req), "web", "");
+            const user = store.db.users[userId] ?? hub.ensureUser(userId, clientIp(req, config.trustForwardedFor), "web", "");
             const on = url.searchParams.get("status") === "on";
             return json(res, 200, hub.setStreaming(user, on));
         }
@@ -322,8 +323,3 @@ function restoreToken(store: Store, user: UserRecord): void {
     }
 }
 
-function ipOf(req: IncomingMessage): string {
-    const fwd = req.headers["x-forwarded-for"];
-    if (typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
-    return (req.socket.remoteAddress ?? "unknown").replace(/^::ffff:/, "");
-}
