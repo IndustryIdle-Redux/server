@@ -64,13 +64,16 @@ export class Hub {
     private readonly rateBuckets = new Map<LiveConn, { tokens: number; last: number }>();
     /** last `export` time per user (upload quota) */
     private readonly exportTimes = new Map<string, number>();
-    /** leaderboard responses, keyed by board name */
+    /** leaderboard responses, keyed by board name (bounded: the name comes from a query string) */
     private readonly boardCache = new Map<string, { at: number; value: ReturnType<typeof computeBoard> }>();
+    /** cached user-record count so the handshake does not scan the whole users table */
+    private userCountValue: number;
 
     constructor(
         private readonly store: Store,
         private readonly config: ServerConfig
     ) {
+        this.userCountValue = Object.keys(store.db.users).length;
         this.trades = new TradeService(store, config, {
             sendToUser: (userId, message) => this.sendToUser(userId, message),
             broadcast: (message, exceptUserId) => this.broadcast(message, exceptUserId),
@@ -87,7 +90,14 @@ export class Hub {
             if (cached && now - cached.at < ttl) return cached.value;
         }
         const value = computeBoard(this.store.db, name);
-        if (ttl > 0) this.boardCache.set(name, { at: now, value });
+        if (ttl > 0) {
+            // the board name comes from the query string: keep the cache bounded
+            if (this.boardCache.size >= 128) {
+                const oldest = this.boardCache.keys().next().value;
+                if (oldest !== undefined) this.boardCache.delete(oldest);
+            }
+            this.boardCache.set(name, { at: now, value });
+        }
         return value;
     }
 
@@ -102,7 +112,7 @@ export class Hub {
     }
 
     public userCount(): number {
-        return Object.keys(this.store.db.users).length;
+        return this.userCountValue;
     }
 
     /** get-or-create the user record for a websocket handshake */
@@ -126,6 +136,7 @@ export class Hub {
                 version,
             };
             this.store.db.users[userId] = user;
+            this.userCountValue++;
             this.store.markDirty();
         } else {
             user.lastSeenAt = Date.now();

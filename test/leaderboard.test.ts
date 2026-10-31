@@ -1,8 +1,13 @@
 /** Leaderboard metric + row-shape tests (row shapes must match `LeaderboardPage.ts`). */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { computeBoard, ingestTick, NEW_PLAYER_WINDOW_MS, type TickInput } from "../src/leaderboard";
-import type { Db } from "../src/store";
+import { Store, type Db } from "../src/store";
+import { Hub } from "../src/ws";
+import { testConfig } from "./helpers";
 
 function emptyDb(): Db {
     return { users: {}, tokens: {}, trades: {}, history: [], chat: {}, pledges: {}, mutes: {}, snapshots: {}, streams: {} };
@@ -138,5 +143,26 @@ describe("computeBoard", () => {
     it("responses always carry updatedAt", () => {
         const r = computeBoard(seededDb(), "byCash");
         expect(r.updatedAt).toBeGreaterThan(0);
+    });
+});
+
+describe("leaderboard cache bounds", () => {
+    it("keeps the per-name cache bounded by dropping the oldest board", async () => {
+        const hub = new Hub(new Store(fs.mkdtempSync(path.join(os.tmpdir(), "ii-board-cache-"))), {
+            ...testConfig({ leaderboardCacheMs: 60_000 }),
+        });
+        for (let i = 0; i < 300; i++) hub.leaderboard(`unknown-${i}`);
+        const cache = (hub as unknown as { boardCache: Map<string, unknown> }).boardCache;
+        expect(cache.size).toBeLessThanOrEqual(128);
+    });
+
+    it("tracks the user count without rescanning the users table", () => {
+        const hub = new Hub(new Store(fs.mkdtempSync(path.join(os.tmpdir(), "ii-user-count-"))), testConfig());
+        expect(hub.userCount()).toBe(0);
+        hub.ensureUser("u1", "127.0.0.1", "web", "1");
+        hub.ensureUser("u2", "127.0.0.1", "web", "1");
+        expect(hub.userCount()).toBe(2);
+        hub.ensureUser("u1", "127.0.0.1", "web", "1");
+        expect(hub.userCount()).toBe(2);
     });
 });
