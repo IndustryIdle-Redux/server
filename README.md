@@ -43,6 +43,9 @@ in `data/db.json`; exported save dumps are written to `data/saves/`.
 | `chatHistorySize` | | `200` | Chat history entries kept per channel |
 | `staleTradeTtlMs` | | `0` (off) | Sweep open orders older than this; see the caveat below |
 | `maxExportBytes` | `MAX_EXPORT_BYTES` | `8388608` (8 MiB) | Maximum size of a WS `export` save dump; `0` = unlimited |
+| `maxWsPayloadBytes` | `MAX_WS_PAYLOAD_BYTES` | `10485760` (10 MiB) | Maximum size of one WebSocket message; must stay above `maxExportBytes` for exports to work |
+| `wsRateLimitPerSecond` | `WS_RATE_LIMIT_PER_SECOND` | `50` | Per-connection message budget per second; `0` disables the limit |
+| `exportMinIntervalMs` | `EXPORT_MIN_INTERVAL_MS` | `10000` | Minimum interval between `export` uploads per user; `0` disables the quota |
 | `trustForwardedFor` | `TRUST_FORWARDED_FOR` | `false` | Use `X-Forwarded-For` as the client ip. Only enable behind a reverse proxy that overwrites it |
 | `trustAll` | | `true` | Treat new users as authenticated (self-hosted mode has no platform authentication) |
 
@@ -87,6 +90,11 @@ address and ignores it.
 Client to server: `join {channel, streaming}`, `chat {user, dlc, flag, message, channel}`, `trade`
 (signed order message), `tick` (leaderboard snapshot), `pledge`, `export {data}`, `signal`.
 
+Messages are bounded: one frame may be at most `maxWsPayloadBytes`, each connection gets a
+`wsRateLimitPerSecond` token budget, chat channels/names/flags and other persisted strings are
+length-capped, pledge entries and WebRTC sessions are bounded, and oversized `export` dumps are
+rejected. A connection that exceeds the message rate is closed with code 1008.
+
 Server to client: `join {messages}`, `chat`, `trade {flush|add|delete|myTrades|error|id}`, `pledge`,
 `streaming {users}`, `signal`, `tradeFine` (this server never issues fines).
 
@@ -97,8 +105,9 @@ force-reconnects after about 70 seconds of silence, so a `tick` gets a state pus
 
 `export` is a debug channel: the client sends its whole save when the server broadcasts an `export`
 message. Payloads above `maxExportBytes` are rejected and not written to disk. The userId in the file
-name is sanitized, so it cannot escape `saves/`. Writes are synchronous; keep this endpoint for
-trusted clients.
+name is sanitized, so it cannot escape `saves/`; a timestamp and random suffix keep rapid uploads from
+overwriting each other, uploads are rate-limited per user (`exportMinIntervalMs`) and written
+asynchronously so a large dump cannot block other connections.
 
 ### Trade order lifecycle
 

@@ -62,6 +62,12 @@ export interface ServerConfig {
      * Only enable this behind a reverse proxy that overwrites the header.
      */
     trustForwardedFor: boolean;
+    /** maximum size of one WebSocket message in bytes (streaming payloads are capped separately) */
+    maxWsPayloadBytes: number;
+    /** per-connection message budget per second (0 disables the limit) */
+    wsRateLimitPerSecond: number;
+    /** minimum interval between `export` uploads per user (0 disables the quota) */
+    exportMinIntervalMs: number;
     /**
      * trust new users by default (self-hosted: no platform verification available).
      *
@@ -88,6 +94,9 @@ const DEFAULTS: ServerConfig = {
     staleTradeTtlMs: 0,
     maxExportBytes: DEFAULT_MAX_EXPORT_BYTES,
     trustForwardedFor: false,
+    maxWsPayloadBytes: 10 * 1024 * 1024,
+    wsRateLimitPerSecond: 50,
+    exportMinIntervalMs: 10_000,
     trustAll: true,
 };
 
@@ -132,6 +141,18 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
     if (process.env.TRUST_FORWARDED_FOR !== undefined) {
         config.trustForwardedFor = /^(1|true|yes|on)$/i.test(process.env.TRUST_FORWARDED_FOR.trim());
     }
+    if (process.env.MAX_WS_PAYLOAD_BYTES !== undefined) {
+        const n = Number(process.env.MAX_WS_PAYLOAD_BYTES);
+        if (Number.isFinite(n) && n > 0) config.maxWsPayloadBytes = n;
+    }
+    if (process.env.WS_RATE_LIMIT_PER_SECOND !== undefined) {
+        const n = Number(process.env.WS_RATE_LIMIT_PER_SECOND);
+        if (Number.isFinite(n) && n >= 0) config.wsRateLimitPerSecond = n;
+    }
+    if (process.env.EXPORT_MIN_INTERVAL_MS !== undefined) {
+        const n = Number(process.env.EXPORT_MIN_INTERVAL_MS);
+        if (Number.isFinite(n) && n >= 0) config.exportMinIntervalMs = n;
+    }
 
     // normalise whatever config.json contained so a typo cannot silently weaken the server
     config.host = typeof config.host === "string" && config.host.trim() ? config.host.trim() : DEFAULTS.host;
@@ -140,6 +161,18 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
     config.maxExportBytes = Number.isFinite(config.maxExportBytes) && config.maxExportBytes >= 0 ? config.maxExportBytes : DEFAULTS.maxExportBytes;
     config.staleTradeTtlMs = Number.isFinite(config.staleTradeTtlMs) && config.staleTradeTtlMs > 0 ? config.staleTradeTtlMs : 0;
     config.trustForwardedFor = config.trustForwardedFor === true;
+    config.maxWsPayloadBytes =
+        Number.isFinite(config.maxWsPayloadBytes) && config.maxWsPayloadBytes >= 1024
+            ? Math.min(config.maxWsPayloadBytes, 64 * 1024 * 1024)
+            : DEFAULTS.maxWsPayloadBytes;
+    config.wsRateLimitPerSecond =
+        Number.isFinite(config.wsRateLimitPerSecond) && config.wsRateLimitPerSecond >= 0
+            ? Math.min(config.wsRateLimitPerSecond, 1000)
+            : DEFAULTS.wsRateLimitPerSecond;
+    config.exportMinIntervalMs =
+        Number.isFinite(config.exportMinIntervalMs) && config.exportMinIntervalMs >= 0
+            ? config.exportMinIntervalMs
+            : DEFAULTS.exportMinIntervalMs;
     // an empty key is a valid configuration (the client ships with an empty default too),
     // but both sides must agree on it
     config.saveFileKey = typeof config.saveFileKey === "string" ? config.saveFileKey : "";

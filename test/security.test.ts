@@ -31,7 +31,7 @@ import { TestClient, testConfig, tradeMessage } from "./helpers";
 /* ------------------------------------------------------------------ helpers */
 
 /** env vars loadConfig reads — snapshot/restore around each test */
-const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR"] as const;
+const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR", "MAX_WS_PAYLOAD_BYTES", "WS_RATE_LIMIT_PER_SECOND", "EXPORT_MIN_INTERVAL_MS"] as const;
 
 function withoutEnv<T>(fn: () => T): T {
     const saved = new Map<string, string | undefined>();
@@ -105,6 +105,9 @@ describe("configuration defaults", () => {
         expect(config.staleTradeTtlMs).toBe(0);
         expect(config.maxExportBytes).toBe(DEFAULT_MAX_EXPORT_BYTES);
         expect(config.trustForwardedFor).toBe(false);
+        expect(config.maxWsPayloadBytes).toBe(10 * 1024 * 1024);
+        expect(config.wsRateLimitPerSecond).toBe(50);
+        expect(config.exportMinIntervalMs).toBe(10000);
         expect(config.trustAll).toBe(true);
     });
 
@@ -116,6 +119,9 @@ describe("configuration defaults", () => {
             process.env.ADMIN_TOKEN = "s3cret";
             process.env.MAX_EXPORT_BYTES = "1024";
             process.env.TRUST_FORWARDED_FOR = "true";
+            process.env.MAX_WS_PAYLOAD_BYTES = "2048";
+            process.env.WS_RATE_LIMIT_PER_SECOND = "7";
+            process.env.EXPORT_MIN_INTERVAL_MS = "500";
             return loadConfig(cwd);
         });
         expect(config.host).toBe("0.0.0.0");
@@ -123,6 +129,9 @@ describe("configuration defaults", () => {
         expect(config.adminToken).toBe("s3cret");
         expect(config.maxExportBytes).toBe(1024);
         expect(config.trustForwardedFor).toBe(true);
+        expect(config.maxWsPayloadBytes).toBe(2048);
+        expect(config.wsRateLimitPerSecond).toBe(7);
+        expect(config.exportMinIntervalMs).toBe(500);
     });
 
     it("normalises a broken mods / maxExportBytes value instead of trusting it", () => {

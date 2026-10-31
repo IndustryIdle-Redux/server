@@ -9,5 +9,8 @@
     "chatHistorySize": 200,
     "staleTradeTtlMs": 0,
     "maxExportBytes": 8388608,
-    "trustAll": true
+    "trustAll": true,
+    "maxWsPayloadBytes": 10485760,
+    "wsRateLimitPerSecond": 50,
+    "exportMinIntervalMs": 10000
 }

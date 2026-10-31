@@ -9,6 +9,7 @@
 
 import type { ServerConfig } from "./config";
 import type { ChatRecord, Store, UserRecord } from "./store";
+import { clampString, sanitizeChannel } from "./validation";
 
 export const DEFAULT_CHANNEL = "en";
 
@@ -45,8 +46,8 @@ export class ChatService {
      * Returns the stored record, or an error string.
      */
     public handleChat(user: UserRecord, msg: { message?: unknown; channel?: unknown }, now = Date.now()): ChatRecord | string {
-        const message = typeof msg.message === "string" ? msg.message.trim() : "";
-        const channel = typeof msg.channel === "string" && msg.channel ? msg.channel : DEFAULT_CHANNEL;
+        const message = clampString(msg.message, 500);
+        const channel = sanitizeChannel(msg.channel, DEFAULT_CHANNEL);
         if (!message) return "empty message";
         if (message.length > 500) return "message too long";
         if (this.isMuted(user.ip, now)) return "you are muted";

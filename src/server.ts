@@ -34,7 +34,7 @@ export function createServer(config: ServerConfig): RunningServer {
         void handleRest(hub, store, config, req, res);
     });
 
-    const wss = new WebSocketServer({ noServer: true });
+    const wss = new WebSocketServer({ noServer: true, maxPayload: config.maxWsPayloadBytes });
 
     server.on("upgrade", (req, socket, head) => {
         wss.handleUpgrade(req, socket, head, (ws) => {
@@ -67,7 +67,7 @@ export function createServer(config: ServerConfig): RunningServer {
                     ws.send(JSON.stringify(message));
                 }
             },
-            close: () => ws.close(),
+            close: (code?: number, reason?: string) => ws.close(code, reason),
         };
         hub.addConnection(conn);
         ws.on("message", (data) => hub.handleRaw(conn, data.toString()));

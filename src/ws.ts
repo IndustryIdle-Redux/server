@@ -38,6 +38,7 @@ import { TradeService } from "./trade";
 import { ingestTick } from "./leaderboard";
 import type { Store, UserRecord, ChatRecord } from "./store";
 import type { IChatMessage, IStreamingUser, IPledge } from "./types";
+import { boundedInt, boundedNumber, clampString, finiteNumber, sanitizeChannel } from "./validation";
 
 export interface LiveConn {
     ws: WebSocket;
@@ -46,7 +47,7 @@ export interface LiveConn {
     isMod: boolean;
     channel: string;
     send(message: Record<string, unknown>): void;
-    close(): void;
+    close(code?: number, reason?: string): void;
 }
 
 /** messages with these keys are WebRTC relay payloads routed by `key` */
@@ -58,7 +59,11 @@ export class Hub {
 
     private readonly conns = new Map<string, Set<LiveConn>>();
     /** WebRTC session key → { streamer, audience } user ids */
-    private readonly signalRoutes = new Map<string, { streamer: string; audience: string }>();
+    private readonly signalRoutes = new Map<string, { streamer: string; audience: string; createdAt: number }>();
+    /** per-connection message budget */
+    private readonly rateBuckets = new Map<LiveConn, { tokens: number; last: number }>();
+    /** last `export` time per user (upload quota) */
+    private readonly exportTimes = new Map<string, number>();
 
     constructor(
         private readonly store: Store,
@@ -108,6 +113,23 @@ export class Hub {
 
     /* ---------------- connection lifecycle ---------------- */
 
+    /** Per-connection token bucket; returns false when the message must be dropped. */
+    private takeRateToken(conn: LiveConn): boolean {
+        const limit = this.config.wsRateLimitPerSecond;
+        if (limit <= 0) return true;
+        const now = Date.now();
+        let bucket = this.rateBuckets.get(conn);
+        if (!bucket) {
+            bucket = { tokens: limit, last: now };
+            this.rateBuckets.set(conn, bucket);
+        }
+        bucket.tokens = Math.min(limit, bucket.tokens + ((now - bucket.last) / 1000) * limit);
+        bucket.last = now;
+        if (bucket.tokens < 1) return false;
+        bucket.tokens -= 1;
+        return true;
+    }
+
     public addConnection(conn: LiveConn): void {
         let set = this.conns.get(conn.userId);
         if (!set) {
@@ -118,6 +140,7 @@ export class Hub {
     }
 
     public removeConnection(conn: LiveConn): void {
+        this.rateBuckets.delete(conn);
         const set = this.conns.get(conn.userId);
         if (set) {
             set.delete(conn);
@@ -173,6 +196,10 @@ export class Hub {
     /* ---------------- message dispatch ---------------- */
 
     public handleRaw(conn: LiveConn, raw: string): void {
+        if (!this.takeRateToken(conn)) {
+            conn.close(1008, "rate limit");
+            return;
+        }
         let msg: Record<string, unknown>;
         try {
             msg = JSON.parse(raw);
@@ -221,7 +248,7 @@ export class Hub {
     /* ---------------- join ---------------- */
 
     private handleJoin(conn: LiveConn, user: UserRecord, msg: Record<string, unknown>): void {
-        const channel = typeof msg.channel === "string" && msg.channel ? msg.channel : "en";
+        const channel = sanitizeChannel(msg.channel);
         conn.channel = channel;
         // chat history (mods see sender ips for the mute UI)
         const messages = this.chat.history(channel).map((m) => this.chatMessage(m, conn.isMod));
@@ -256,9 +283,9 @@ export class Hub {
     private handleChat(conn: LiveConn, user: UserRecord, msg: Record<string, unknown>): void {
         // the chat message carries the player's current display name / flag / dlc
         // (they are changeable in-game), so refresh the user record from it
-        if (typeof msg.user === "string" && msg.user.trim()) user.userName = msg.user.trim().slice(0, 24);
-        if (typeof msg.flag === "string" && msg.flag) user.flag = msg.flag.slice(0, 24);
-        if (typeof msg.dlc === "number" && Number.isFinite(msg.dlc)) user.dlc = msg.dlc;
+        user.userName = clampString(msg.user, 24, user.userName);
+        user.flag = clampString(msg.flag, 24, user.flag);
+        user.dlc = boundedInt(msg.dlc, 0, 100, user.dlc);
         const result = this.chat.handleChat(user, msg as { message?: unknown; channel?: unknown });
         if (typeof result === "string") {
             return; // rate-limited / muted / invalid: silently dropped (the client sends without `id`)
@@ -282,26 +309,27 @@ export class Hub {
     /* ---------------- tick / leaderboard ---------------- */
 
     private handleTick(conn: LiveConn, user: UserRecord, msg: Record<string, unknown>): void {
-        const num = (v: unknown, fallback = 0) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+        const userName = clampString(msg.userName, 64, user.userName);
+        const flag = clampString(msg.flag, 64, user.flag);
         ingestTick(this.store.db, {
             userId: user.userId,
-            userName: typeof msg.userName === "string" ? msg.userName : user.userName,
-            flag: typeof msg.flag === "string" ? msg.flag : user.flag,
-            dlc: num(msg.dlc),
-            map: typeof msg.map === "string" ? msg.map : "",
-            mapCreatedAt: num(msg.mapCreatedAt),
-            cash: num(msg.cash),
-            resourceValuation: num(msg.resourceValuation),
-            resourceValuationForReference: num(msg.resourceValuationForReference),
-            buildingValuation: num(msg.buildingValuation),
-            buildingCount: num(msg.buildingCount),
-            prestigeCurrency: num(msg.prestigeCurrency),
-            allPrestigeCurrency: num(msg.allPrestigeCurrency),
-            optOut: !!msg.optOut,
+            userName,
+            flag,
+            dlc: boundedInt(msg.dlc, 0, 100, user.dlc),
+            map: clampString(msg.map, 64),
+            mapCreatedAt: boundedNumber(msg.mapCreatedAt, 0, 8.64e15),
+            cash: finiteNumber(msg.cash),
+            resourceValuation: finiteNumber(msg.resourceValuation),
+            resourceValuationForReference: finiteNumber(msg.resourceValuationForReference),
+            buildingValuation: finiteNumber(msg.buildingValuation),
+            buildingCount: boundedInt(msg.buildingCount, 0, 1e9),
+            prestigeCurrency: finiteNumber(msg.prestigeCurrency),
+            allPrestigeCurrency: finiteNumber(msg.allPrestigeCurrency),
+            optOut: msg.optOut === true,
         });
-        if (typeof msg.userName === "string") user.userName = msg.userName;
-        if (typeof msg.flag === "string") user.flag = msg.flag;
-        user.dlc = num(msg.dlc, user.dlc);
+        user.userName = userName;
+        user.flag = flag;
+        user.dlc = boundedInt(msg.dlc, 0, 100, user.dlc);
         user.lastSeenAt = Date.now();
         this.store.markDirty();
         // heartbeat: the client force-reconnects when it receives nothing for ~70s,
@@ -312,14 +340,26 @@ export class Hub {
     /* ---------------- crowdfunding pledges ---------------- */
 
     private handlePledge(conn: LiveConn, msg: Record<string, unknown>): void {
-        const pledge = (msg.pledge ?? {}) as Record<string, IPledge[]>;
+        const pledge = msg.pledge;
+        if (!pledge || typeof pledge !== "object" || Array.isArray(pledge)) return;
+        const entries = Object.entries(pledge as Record<string, unknown>);
+        if (entries.length > 256) return;
         // aggregate by `${projectId}.${index}` (see CrowdfundingPage: `G.socket.pledge[id + "." + index]`)
-        for (const [projectId, list] of Object.entries(pledge)) {
-            if (!Array.isArray(list)) continue;
+        for (const [rawProjectId, list] of entries) {
+            // reject overlong ids instead of truncating: truncation would merge unrelated projects
+            if (rawProjectId.length > 64) continue;
+            const projectId = clampString(rawProjectId, 64);
+            if (!projectId || !Array.isArray(list) || list.length > 100) continue;
             for (const p of list) {
-                if (!p || !Number.isFinite(p.amount) || !Number.isFinite(p.index)) continue;
-                const key = `${projectId}.${p.index}`;
-                this.store.db.pledges[key] = (this.store.db.pledges[key] ?? 0) + Math.max(0, p.amount);
+                if (!p || typeof p !== "object") continue;
+                const entry = p as IPledge;
+                if (typeof entry.resource !== "string" || entry.resource.length > 64) continue;
+                const index = boundedInt(entry.index, 0, 1_000_000, -1);
+                if (index < 0) continue;
+                const amount = boundedNumber(entry.amount, 0, 1e30);
+                const key = `${projectId}.${index}`;
+                if (this.store.db.pledges[key] === undefined && Object.keys(this.store.db.pledges).length >= 10_000) continue;
+                this.store.db.pledges[key] = (this.store.db.pledges[key] ?? 0) + amount;
             }
         }
         this.store.markDirty();
@@ -342,12 +382,22 @@ export class Hub {
                 console.warn(`[export] rejected oversized save from ${conn.userId}: ${size} bytes > limit ${limit} bytes`);
                 return;
             }
+            const now = Date.now();
+            const last = this.exportTimes.get(conn.userId) ?? 0;
+            if (now - last < this.config.exportMinIntervalMs) {
+                console.warn(`[export] rate-limited save from ${conn.userId}`);
+                return;
+            }
+            this.exportTimes.set(conn.userId, now);
             const dir = path.join(this.config.dataDir, "saves");
-            fs.mkdirSync(dir, { recursive: true });
             // `conn.userId` comes straight from the WS query string: never let it escape `saves/`
-            const file = path.join(dir, `${safeFileSegment(conn.userId)}-${Date.now()}.json`);
-            fs.writeFileSync(file, raw);
-            console.log(`[export] stored save of ${conn.userId} → ${file} (${size} bytes)`);
+            const file = path.join(dir, `${safeFileSegment(conn.userId)}-${now}-${newToken().slice(0, 8)}.json`);
+            // Async: an 8 MB dump must not block the event loop for every other connection.
+            void fs.promises
+                .mkdir(dir, { recursive: true })
+                .then(() => fs.promises.writeFile(file, raw))
+                .then(() => console.log(`[export] stored save of ${conn.userId} → ${file} (${size} bytes)`))
+                .catch((e) => console.error("[export] failed to store save:", e));
         } catch (e) {
             console.error("[export] failed to store save:", e);
         }
@@ -388,16 +438,22 @@ export class Hub {
     private handleSignal(conn: LiveConn, msg: Record<string, unknown>): void {
         // audience → streamer: request a new WebRTC session key, addressed by stream token
         if (msg.init && typeof msg.token === "string") {
+            if (msg.token.length > 128) return;
             // `token` is the streamer's **streaming** token (issued by POST /stream), not the trade token
             const streamer = Object.values(this.store.db.streams).find((s) => s.token === msg.token)?.userId;
             if (!streamer) return;
+            let sessions = 0;
+            for (const route of this.signalRoutes.values()) {
+                if (route.streamer === conn.userId || route.audience === conn.userId) sessions++;
+            }
+            if (sessions >= 32) return;
             const key = newToken();
-            this.signalRoutes.set(key, { streamer, audience: conn.userId });
+            this.signalRoutes.set(key, { streamer, audience: conn.userId, createdAt: Date.now() });
             this.sendToUser(streamer, { type: "signal", init: true, key, user: msg.user });
             conn.send(this.decorate({ type: "signal", issueKey: true, key }, conn));
             return;
         }
-        if (typeof msg.key !== "string") return;
+        if (typeof msg.key !== "string" || msg.key.length > 128) return;
         const route = this.signalRoutes.get(msg.key);
         if (!route) return;
         // relay to the other side of the session
@@ -414,6 +470,13 @@ export class Hub {
 
     /** periodic keep-alive (also refreshes the client's server clock) */
     public heartbeat(): void {
+        const now = Date.now();
+        for (const [key, route] of this.signalRoutes) {
+            if (now - route.createdAt > 10 * 60 * 1000) this.signalRoutes.delete(key);
+        }
+        for (const [userId, at] of this.exportTimes) {
+            if (now - at > 60 * 60 * 1000) this.exportTimes.delete(userId);
+        }
         this.broadcast({ type: "streaming", users: this.streamingUsers() });
     }
 }

@@ -28,6 +28,9 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
         staleTradeTtlMs: 0,
         maxExportBytes: DEFAULT_MAX_EXPORT_BYTES,
         trustForwardedFor: false,
+        maxWsPayloadBytes: 10 * 1024 * 1024,
+        wsRateLimitPerSecond: 0,
+        exportMinIntervalMs: 0,
         trustAll: true,
         ...overrides,
     };
@@ -37,10 +40,12 @@ export async function startTestServer(overrides: Partial<ServerConfig> = {}): Pr
     running: RunningServer;
     port: number;
     http: string;
+    config: ServerConfig;
 }> {
-    const running = createServer(testConfig(overrides));
+    const config = testConfig(overrides);
+    const running = createServer(config);
     const port = await running.listen(0, "127.0.0.1");
-    return { running, port, http: `http://127.0.0.1:${port}` };
+    return { running, port, http: `http://127.0.0.1:${port}`, config };
 }
 
 /** re-implements the client's `GameData.signTrade` exactly (see src/shared/state/GameData.ts) */
@@ -67,6 +72,8 @@ export class TestClient {
     private ws: WebSocket;
     private waiters: Waiter[] = [];
     private openPromise: Promise<void>;
+    /** resolves with the close code/reason when the server (or the test) closes the socket */
+    public readonly closed: Promise<{ code: number; reason: string }>;
 
     private constructor(userId: string, ws: WebSocket) {
         this.userId = userId;
@@ -82,6 +89,9 @@ export class TestClient {
         this.openPromise = new Promise((resolve, reject) => {
             ws.once("open", () => resolve());
             ws.once("error", reject);
+        });
+        this.closed = new Promise((resolve) => {
+            ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
         });
     }
 
