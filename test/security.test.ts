@@ -31,7 +31,7 @@ import { TestClient, testConfig, tradeMessage } from "./helpers";
 /* ------------------------------------------------------------------ helpers */
 
 /** env vars loadConfig reads — snapshot/restore around each test */
-const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR", "MAX_WS_PAYLOAD_BYTES", "WS_RATE_LIMIT_PER_SECOND", "EXPORT_MIN_INTERVAL_MS"] as const;
+const ENV_KEYS = ["PORT", "HOST", "DATA_DIR", "SAVE_FILE_KEY", "MODS", "ADMIN_TOKEN", "MAX_EXPORT_BYTES", "TRUST_FORWARDED_FOR", "MAX_WS_PAYLOAD_BYTES", "WS_RATE_LIMIT_PER_SECOND", "EXPORT_MIN_INTERVAL_MS", "LEADERBOARD_CACHE_MS", "REQUIRE_TRADE_TOKEN_PROOF"] as const;
 
 function withoutEnv<T>(fn: () => T): T {
     const saved = new Map<string, string | undefined>();
@@ -105,9 +105,14 @@ describe("configuration defaults", () => {
         expect(config.staleTradeTtlMs).toBe(0);
         expect(config.maxExportBytes).toBe(DEFAULT_MAX_EXPORT_BYTES);
         expect(config.trustForwardedFor).toBe(false);
+        expect(config.port).toBe(5185);
+        expect(config.chatRateLimitMs).toBe(3000);
+        expect(config.leaderboardCacheMs).toBe(1000);
         expect(config.maxWsPayloadBytes).toBe(10 * 1024 * 1024);
         expect(config.wsRateLimitPerSecond).toBe(50);
         expect(config.exportMinIntervalMs).toBe(10000);
+        expect(config.leaderboardCacheMs).toBe(1000);
+        expect(config.requireTradeTokenProof).toBe(false);
         expect(config.trustAll).toBe(true);
     });
 
@@ -122,6 +127,8 @@ describe("configuration defaults", () => {
             process.env.MAX_WS_PAYLOAD_BYTES = "2048";
             process.env.WS_RATE_LIMIT_PER_SECOND = "7";
             process.env.EXPORT_MIN_INTERVAL_MS = "500";
+            process.env.LEADERBOARD_CACHE_MS = "250";
+            process.env.REQUIRE_TRADE_TOKEN_PROOF = "true";
             return loadConfig(cwd);
         });
         expect(config.host).toBe("0.0.0.0");
@@ -132,16 +139,21 @@ describe("configuration defaults", () => {
         expect(config.maxWsPayloadBytes).toBe(2048);
         expect(config.wsRateLimitPerSecond).toBe(7);
         expect(config.exportMinIntervalMs).toBe(500);
+        expect(config.leaderboardCacheMs).toBe(250);
+        expect(config.requireTradeTokenProof).toBe(true);
     });
 
     it("normalises a broken mods / maxExportBytes value instead of trusting it", () => {
         const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ii-config-"));
-        fs.writeFileSync(path.join(cwd, "config.json"), JSON.stringify({ mods: "*", maxExportBytes: -1, adminToken: 42, trustForwardedFor: "yes" }));
+        fs.writeFileSync(path.join(cwd, "config.json"), JSON.stringify({ mods: "*", maxExportBytes: -1, adminToken: 42, trustForwardedFor: "yes", port: "abc", chatRateLimitMs: "x", leaderboardCacheMs: -5 }));
         const config = withoutEnv(() => loadConfig(cwd));
         expect(config.mods).toEqual([]);
         expect(config.maxExportBytes).toBe(DEFAULT_MAX_EXPORT_BYTES);
         expect(config.adminToken).toBe("");
         expect(config.trustForwardedFor).toBe(false);
+        expect(config.port).toBe(5185);
+        expect(config.chatRateLimitMs).toBe(3000);
+        expect(config.leaderboardCacheMs).toBe(1000);
     });
 
     it("warns loudly about mods: ['*'] and about a non-loopback bind without ADMIN_TOKEN", () => {
@@ -426,5 +438,46 @@ describe("stale trade reaping", () => {
     it("never sweeps when the TTL is 0 (default/disabled)", async () => {
         const server = await startTracked(testConfig({ mods: [], staleTradeTtlMs: 0 }));
         expect(server.running.hub.trades.sweepStale(Date.now() + 60_000)).toBe(0);
+    });
+});
+
+/* ------------------------------------------------------------------ optional proof + user id */
+
+describe("user route input validation", () => {
+    it("requires a trade-token proof for clear/history when configured", async () => {
+        const server = await startTracked(testConfig({ mods: [], requireTradeTokenProof: true }));
+        await bindToken(server, "proof-user", "proof-token");
+
+        const clearNoProof = await fetch(`${server.http}/trade/clear`, {
+            method: "POST",
+            headers: jsonHeaders("proof-user"),
+        });
+        expect(clearNoProof.status).toBe(403);
+
+        const clearWithProof = await fetch(`${server.http}/trade/clear`, {
+            method: "POST",
+            headers: jsonHeaders("proof-user", { "X-Trade-Token": "proof-token" }),
+        });
+        expect(clearWithProof.status).toBe(200);
+
+        const historyNoProof = await fetch(`${server.http}/trade/history`, { headers: jsonHeaders("proof-user") });
+        expect(historyNoProof.status).toBe(403);
+        const historyWithProof = await fetch(`${server.http}/trade/history`, {
+            headers: jsonHeaders("proof-user", { "X-Trade-Token": "proof-token" }),
+        });
+        expect(historyWithProof.status).toBe(200);
+    });
+
+    it("rejects empty user ids instead of creating junk records", async () => {
+        const server = await startTracked(testConfig({ mods: [] }));
+        const noHeader = { "Content-Type": "application/json" };
+        expect((await fetch(`${server.http}/trade/clear`, { method: "POST", headers: noHeader })).status).toBe(400);
+        expect((await fetch(`${server.http}/trade/history`, { headers: noHeader })).status).toBe(400);
+        expect((await fetch(`${server.http}/trade/import-save?token=x`, { method: "POST", headers: noHeader })).status).toBe(400);
+        expect((await fetch(`${server.http}/user/authentication`, { method: "POST", headers: noHeader })).status).toBe(400);
+        expect((await fetch(`${server.http}/user/verification?tradeToken=x`, { method: "POST", headers: noHeader })).status).toBe(400);
+        expect((await fetch(`${server.http}/stream?status=on`, { method: "POST", headers: noHeader })).status).toBe(400);
+        expect(Object.keys(server.running.store.db.users)).not.toContain("");
+        expect(Object.keys(server.running.store.db.tokens)).not.toContain("");
     });
 });

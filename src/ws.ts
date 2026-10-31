@@ -35,7 +35,7 @@ import type { WebSocket } from "ws";
 import type { ServerConfig } from "./config";
 import { ChatService } from "./chat";
 import { TradeService } from "./trade";
-import { ingestTick } from "./leaderboard";
+import { computeBoard, ingestTick } from "./leaderboard";
 import type { Store, UserRecord, ChatRecord } from "./store";
 import type { IChatMessage, IStreamingUser, IPledge } from "./types";
 import { boundedInt, boundedNumber, clampString, finiteNumber, sanitizeChannel } from "./validation";
@@ -64,6 +64,8 @@ export class Hub {
     private readonly rateBuckets = new Map<LiveConn, { tokens: number; last: number }>();
     /** last `export` time per user (upload quota) */
     private readonly exportTimes = new Map<string, number>();
+    /** leaderboard responses, keyed by board name */
+    private readonly boardCache = new Map<string, { at: number; value: ReturnType<typeof computeBoard> }>();
 
     constructor(
         private readonly store: Store,
@@ -74,6 +76,19 @@ export class Hub {
             broadcast: (message, exceptUserId) => this.broadcast(message, exceptUserId),
         });
         this.chat = new ChatService(store, config);
+    }
+
+    /** Compute a board, reusing the previous response for `leaderboardCacheMs`. */
+    public leaderboard(name: string): ReturnType<typeof computeBoard> {
+        const ttl = this.config.leaderboardCacheMs;
+        const now = Date.now();
+        if (ttl > 0) {
+            const cached = this.boardCache.get(name);
+            if (cached && now - cached.at < ttl) return cached.value;
+        }
+        const value = computeBoard(this.store.db, name);
+        if (ttl > 0) this.boardCache.set(name, { at: now, value });
+        return value;
     }
 
     /* ---------------- user / moderation helpers ---------------- */

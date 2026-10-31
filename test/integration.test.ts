@@ -8,6 +8,8 @@ import WebSocket from "ws";
 import { startTestServer, TestClient, tradeMessage, signTrade } from "./helpers";
 import type { RunningServer } from "../src/server";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 let running: RunningServer;
 let port: number;
 let http: string;
@@ -228,6 +230,33 @@ describe("tick → leaderboard", () => {
         const board = await (await rest("/leaderboard/v4?name=byCash")).json();
         expect(board.data.some((r: any[]) => r[1] === "GHOST")).toBe(false);
         ghost.close();
+    });
+});
+
+describe("leaderboard cache", () => {
+    it("reuses the response inside the cache window", async () => {
+        const server = await startTestServer({ leaderboardCacheMs: 60_000 });
+        const client = await TestClient.connect(server.port, "cache-user");
+        client.send({
+            type: "tick",
+            userName: "CACHE",
+            flag: "earth",
+            dlc: 0,
+            map: "Stockholm",
+            cash: 123,
+            resourceValuation: 1,
+            buildingValuation: 1,
+            buildingCount: 1,
+            prestigeCurrency: 0,
+            allPrestigeCurrency: 0,
+        });
+        await sleep(200);
+        const first = await (await fetch(`${server.http}/leaderboard/v4?name=byCash`)).json();
+        await sleep(30);
+        const second = await (await fetch(`${server.http}/leaderboard/v4?name=byCash`)).json();
+        expect(first.updatedAt).toBe(second.updatedAt);
+        client.close();
+        await server.running.close();
     });
 });
 

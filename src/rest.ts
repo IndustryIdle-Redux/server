@@ -38,7 +38,6 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isLoopbackAddress, type ServerConfig } from "./config";
 import { clientIp } from "./ip";
-import { computeBoard } from "./leaderboard";
 import type { Store, UserRecord } from "./store";
 import type { Hub } from "./ws";
 import type { IVerificationResult } from "./types";
@@ -124,6 +123,30 @@ export function isAdminAuthorized(req: IncomingMessage, hub: Hub, config: Server
     return hub.isMod(userId);
 }
 
+/**
+ * Routes that act on a user require a non-empty `X-User-Id`. Without this check an empty
+ * header created junk user records and token mappings under the empty user id.
+ */
+function requireUser(res: ServerResponse, userId: string): boolean {
+    if (!userId || userId.length > 128) {
+        text(res, 400, "missing or invalid X-User-Id");
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Optional hardening: with `requireTradeTokenProof`, stateful user routes require the
+ * current bound trade token (the in-repo client does not send it yet, so it is off by
+ * default; see README).
+ */
+function hasTradeProof(req: IncomingMessage, store: Store, config: ServerConfig, userId: string): boolean {
+    if (!config.requireTradeTokenProof) return true;
+    const user = store.db.users[userId];
+    if (!user || !user.tradeToken) return true; // nothing bound yet, nothing to protect
+    return constantTimeEqual(headerString(req.headers["x-trade-token"]), user.tradeToken);
+}
+
 function adminDenied(config: ServerConfig): string {
     return config.adminToken
         ? "invalid or missing X-Admin-Token"
@@ -161,15 +184,19 @@ export async function handleRest(
         /* ---------------- leaderboard ---------------- */
         if (p === "/leaderboard/v4" && method === "GET") {
             const name = url.searchParams.get("name") ?? "";
-            return json(res, 200, computeBoard(store.db, name));
+            return json(res, 200, hub.leaderboard(name));
         }
 
         /* ---------------- trades ---------------- */
         if (p === "/trade/history" && method === "GET") {
-            return json(res, 200, userId ? hub.trades.history(userId) : []);
+            if (!requireUser(res, userId)) return;
+            if (!hasTradeProof(req, store, config, userId)) return text(res, 403, "trade token proof required: send X-Trade-Token");
+            return json(res, 200, hub.trades.history(userId));
         }
         if (p === "/trade/clear" && method === "POST") {
-            const count = userId ? hub.trades.clearTrades(userId) : 0;
+            if (!requireUser(res, userId)) return;
+            if (!hasTradeProof(req, store, config, userId)) return text(res, 403, "trade token proof required: send X-Trade-Token");
+            const count = hub.trades.clearTrades(userId);
             return json(res, 200, { removed: count });
         }
         if (p === "/trade/remove" && method === "POST") {
@@ -182,6 +209,7 @@ export async function handleRest(
             return json(res, 200, {});
         }
         if (p === "/trade/import-save" && method === "POST") {
+            if (!requireUser(res, userId)) return;
             const token = url.searchParams.get("token") ?? "";
             const proof = headerString(req.headers["x-trade-token"]);
             const result = importToken(store, userId, token, proof);
@@ -189,6 +217,7 @@ export async function handleRest(
             return json(res, 200, { token: result.token });
         }
         if (p === "/trade/force-restore" && method === "POST") {
+            if (!requireUser(res, userId)) return;
             const token = url.searchParams.get("token") ?? "";
             const proof = headerString(req.headers["x-trade-token"]) || token;
             const user = store.db.users[userId];
@@ -204,12 +233,14 @@ export async function handleRest(
 
         /* ---------------- users ---------------- */
         if (p === "/user/authentication" && method === "POST") {
+            if (!requireUser(res, userId)) return;
             const user = store.db.users[userId] ?? hub.ensureUser(userId, clientIp(req, config.trustForwardedFor), url.searchParams.get("platform") ?? "web", url.searchParams.get("version") ?? "");
             user.authenticated = true;
             store.markDirty();
             return text(res, 200, "ok");
         }
         if (p === "/user/verification" && method === "POST") {
+            if (!requireUser(res, userId)) return;
             const user = store.db.users[userId];
             const token = url.searchParams.get("tradeToken") ?? "";
             // an empty token never proves anything (it would match a not-yet-bound user record)
@@ -237,6 +268,7 @@ export async function handleRest(
 
         /* ---------------- streaming ---------------- */
         if (p === "/stream" && method === "POST") {
+            if (!requireUser(res, userId)) return;
             const user = store.db.users[userId] ?? hub.ensureUser(userId, clientIp(req, config.trustForwardedFor), "web", "");
             const on = url.searchParams.get("status") === "on";
             return json(res, 200, hub.setStreaming(user, on));
@@ -251,7 +283,8 @@ export async function handleRest(
         return text(res, 404, "not found");
     } catch (e) {
         console.error("[rest] error:", e);
-        return text(res, 500, String(e));
+        // never echo internal error text to clients
+        return text(res, 500, "internal error");
     }
 }
 

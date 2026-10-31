@@ -46,6 +46,8 @@ in `data/db.json`; exported save dumps are written to `data/saves/`.
 | `maxWsPayloadBytes` | `MAX_WS_PAYLOAD_BYTES` | `10485760` (10 MiB) | Maximum size of one WebSocket message; must stay above `maxExportBytes` for exports to work |
 | `wsRateLimitPerSecond` | `WS_RATE_LIMIT_PER_SECOND` | `50` | Per-connection message budget per second; `0` disables the limit |
 | `exportMinIntervalMs` | `EXPORT_MIN_INTERVAL_MS` | `10000` | Minimum interval between `export` uploads per user; `0` disables the quota |
+| `leaderboardCacheMs` | `LEADERBOARD_CACHE_MS` | `1000` | Response cache TTL for `/leaderboard/v4`; `0` disables the cache |
+| `requireTradeTokenProof` | `REQUIRE_TRADE_TOKEN_PROOF` | `false` | Require `X-Trade-Token` for `/trade/clear` and `/trade/history`; enable once your client sends it |
 | `trustForwardedFor` | `TRUST_FORWARDED_FOR` | `false` | Use `X-Forwarded-For` as the client ip. Only enable behind a reverse proxy that overwrites it |
 | `trustAll` | | `true` | Treat new users as authenticated (self-hosted mode has no platform authentication) |
 
@@ -58,10 +60,12 @@ sweep TTL, and warns about risky settings.
   `X-User-Id` header. There is no platform-level proof: anyone can claim any userId. In self-hosted
   mode this is a deliberate trade-off, so the `mods` list only prevents casual meddling; use
   `ADMIN_TOKEN` when you need a real credential.
-- **tradeToken** is generated client side and binds to a user the first time the server sees it
-  (`store.adoptToken`). A token already held by another user cannot be claimed. Rebinding a user to
-  a new token does not revoke the old one (so knowing a userId cannot lock the real player out);
-  only the proof-carrying routes (`/trade/force-restore`, `/trade/import-save`) revoke it.
+- **tradeToken** is generated client side and binds to a user only after a trade message verified
+  its signature (`store.adoptToken`). A token already held by another user cannot be claimed.
+  Rebinding a user to a new token does not revoke the old one (so knowing a userId cannot lock the
+  real player out); only the proof-carrying routes (`/trade/force-restore`, `/trade/import-save`)
+  revoke it. The optional `requireTradeTokenProof` setting also demands `X-Trade-Token` for
+  `/trade/clear` and `/trade/history`.
 - **Trade signatures** are `murmurhash3(sorted JSON values + SAVE_FILE_KEY, floor(now / 5000))`,
   computed by the client (`signTrade`) and re-computed by the server; one window of clock drift is
   accepted either way. The key lives in the client bundle, so a valid signature proves "has the
@@ -133,8 +137,8 @@ center. That is why the default is `0`.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/leaderboard/v4?name=<board>` | `{data, updatedAt}`; row shapes depend on the board |
-| GET | `/trade/history` | My order history (`X-User-Id`) |
-| POST | `/trade/clear` | Cancel every live order of a user |
+| GET | `/trade/history` | My order history (`X-User-Id`; requires `X-Trade-Token` when `requireTradeTokenProof` is set) |
+| POST | `/trade/clear` | Cancel every live order of a user (requires `X-Trade-Token` when `requireTradeTokenProof` is set) |
 | POST | `/trade/remove?id=` | Admin order deletion |
 | POST | `/trade/resolve-fine` | Accepted; this server never issues fines |
 | POST | `/trade/import-save?token=` | Bind/rotate a trade token; requires token proof |
@@ -171,9 +175,11 @@ between the two sides until `cancelInit`, `reject` or `failed`.
 ## Security notes
 
 This is a small self-hosted server meant for a trusted player base or a private group. It has no
-platform authentication, it accepts client-reported identity, and it does not validate the volume or
-frequency of most messages. Run it on loopback or behind a proxy that enforces rate and size limits,
-keep `mods` empty, set `ADMIN_TOKEN`, and do not expose the admin endpoints to untrusted clients.
+platform authentication and it accepts client-reported identity. WebSocket messages are size-capped,
+rate-limited per connection and their persisted fields are length-capped; REST stays lightweight
+(leaderboard responses are cached) but there is no per-ip HTTP rate limit, so keep a rate-limiting
+proxy in front when exposing the server. Run it on loopback or behind such a proxy, keep `mods`
+empty, set `ADMIN_TOKEN`, and do not expose the admin endpoints to untrusted clients.
 
 ## License
 

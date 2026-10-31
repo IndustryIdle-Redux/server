@@ -27,6 +27,7 @@ import type { ServerConfig } from "./config";
 import { verifyTradeSignature } from "./hash";
 import type { Store, TradeRecord, UserRecord } from "./store";
 import type { ILocalTrade, ITrade, ITradeRequest, OrderSide } from "./types";
+import { boundedNumber, clampString } from "./validation";
 
 export interface TradeSink {
     /** send to every connection of one user */
@@ -36,6 +37,11 @@ export interface TradeSink {
 }
 
 const MAX_ACTIVE_TRADES_PER_USER = 20;
+const MAX_TRADE_ID_LENGTH = 128;
+const MAX_TRADE_NAME_LENGTH = 64;
+const MAX_TRADE_VALUE = 1e30;
+const TRADE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const RESOURCE_PATTERN = /^[A-Za-z0-9_]+$/;
 
 export class TradeService {
     constructor(
@@ -124,16 +130,21 @@ export class TradeService {
     }
 
     private validate(user: UserRecord, msg: ITradeRequest, now: number): string | null {
-        if (typeof msg.token !== "string" || !msg.token) {
+        if (typeof msg.token !== "string" || !msg.token || msg.token.length > 128) {
             return "invalid trade token";
+        }
+        if (msg.id !== undefined && (typeof msg.id !== "string" || !msg.id || msg.id.length > MAX_TRADE_ID_LENGTH || !TRADE_ID_PATTERN.test(msg.id))) {
+            return "invalid id";
+        }
+        // Verify first: binding happens only after the message proved it came from a game
+        // client, so an unsigned/garbage message cannot claim an unbound user's trade rights.
+        if (!verifyTradeSignature(msg as unknown as Record<string, unknown>, this.config.saveFileKey, now)) {
+            return "invalid signature";
         }
         // the trade token is generated client side: bind it on first use, but never
         // let one user present a token that already belongs to somebody else
         if (msg.token !== user.tradeToken && !this.store.adoptToken(user.userId, msg.token)) {
             return "invalid trade token";
-        }
-        if (!verifyTradeSignature(msg as unknown as Record<string, unknown>, this.config.saveFileKey, now)) {
-            return "invalid signature";
         }
         if (msg.fromUserId && msg.fromUserId !== user.userId) {
             return "fromUserId mismatch";
@@ -156,15 +167,17 @@ export class TradeService {
                   ? "duplicate trade id"
                   : !["buy", "sell"].includes(msg.side as OrderSide)
                     ? "invalid side"
-                    : !msg.resource || typeof msg.resource !== "string"
+                    : !msg.resource || typeof msg.resource !== "string" || msg.resource.length > MAX_TRADE_NAME_LENGTH || !RESOURCE_PATTERN.test(msg.resource)
                       ? "invalid resource"
-                      : !Number.isFinite(msg.amount) || msg.amount <= 0
+                      : !Number.isFinite(msg.amount) || msg.amount <= 0 || msg.amount > MAX_TRADE_VALUE
                         ? "invalid amount"
-                        : !Number.isFinite(msg.price) || msg.price <= 0
+                        : !Number.isFinite(msg.price) || msg.price <= 0 || msg.price > MAX_TRADE_VALUE
                           ? "invalid price"
-                          : this.countOpenOrders(user.userId) >= MAX_ACTIVE_TRADES_PER_USER
-                            ? "too many open trades"
-                            : null;
+                          : typeof msg.fromUserHash !== "string" || msg.fromUserHash.length > MAX_TRADE_NAME_LENGTH
+                            ? "invalid fromUserHash"
+                            : this.countOpenOrders(user.userId) >= MAX_ACTIVE_TRADES_PER_USER
+                              ? "too many open trades"
+                              : null;
         if (error) {
             return { type: "trade", id, error };
         }
@@ -176,12 +189,12 @@ export class TradeService {
             amount: msg.amount,
             price: msg.price,
             from: user.userName,
-            fromUserHash: msg.fromUserHash,
+            fromUserHash: clampString(msg.fromUserHash, MAX_TRADE_NAME_LENGTH),
             fromUserId: user.userId,
             fillBy: null,
             filledByUserId: null,
             status: "open",
-            createdAt: msg.createdAt ?? now,
+            createdAt: boundedNumber(msg.createdAt, 0, 8.64e15, now),
             openedAt: now,
             filledAt: null,
             closedAt: null,

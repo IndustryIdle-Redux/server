@@ -64,6 +64,38 @@ describe("TradeService", () => {
         expect(ctx.broadcasts.some((b) => (b.add as any)?.o1)).toBe(true);
     });
 
+    it("does not bind a trade token before the signature is verified", () => {
+        const carol: UserRecord = {
+            userId: "carol",
+            tradeToken: "",
+            userName: "CAROL",
+            flag: "earth",
+            dlc: 0,
+            authenticated: true,
+            createdAt: Date.now(),
+            lastSeenAt: Date.now(),
+            ip: "127.0.0.1",
+            platform: "web",
+            version: "test",
+        };
+        ctx.store.db.users.carol = carol;
+        const msg = tradeMessage("carol", { id: "c1", side: "sell", resource: "Fe", amount: 1, price: 1, token: "stolen-token" });
+        msg.sig = "0"; // tampered after signing
+        const reply = ctx.service.handleMessage(carol, msg as never);
+        expect(reply.error).toBe("invalid signature");
+        expect(carol.tradeToken).toBe("");
+        expect(ctx.store.db.tokens["stolen-token"]).toBeUndefined();
+        expect(ctx.store.hasBoundToken("carol")).toBe(false);
+    });
+
+    it("rejects oversized trade fields", () => {
+        expect(open(alice, { id: "x".repeat(200) }).error).toBe("invalid id");
+        expect(open(alice, { resource: "Fe".repeat(100) }).error).toBe("invalid resource");
+        expect(open(alice, { amount: 1e40 }).error).toBe("invalid amount");
+        expect(open(alice, { price: 1e40 }).error).toBe("invalid price");
+        expect(open(alice, { fromUserHash: "h".repeat(200) }).error).toBe("invalid fromUserHash");
+    });
+
     it("rejects duplicate ids", () => {
         open(alice);
         const reply = open(alice);

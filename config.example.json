@@ -12,5 +12,7 @@
     "trustAll": true,
     "maxWsPayloadBytes": 10485760,
     "wsRateLimitPerSecond": 50,
-    "exportMinIntervalMs": 10000
+    "exportMinIntervalMs": 10000,
+    "leaderboardCacheMs": 1000,
+    "requireTradeTokenProof": false
 }

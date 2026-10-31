@@ -68,6 +68,13 @@ export interface ServerConfig {
     wsRateLimitPerSecond: number;
     /** minimum interval between `export` uploads per user (0 disables the quota) */
     exportMinIntervalMs: number;
+    /** leaderboard response cache TTL (0 disables the cache) */
+    leaderboardCacheMs: number;
+    /**
+     * require the caller to prove a bound trade token for `/trade/clear` and
+     * `/trade/history` (the in-repo client does not send the header yet; off by default)
+     */
+    requireTradeTokenProof: boolean;
     /**
      * trust new users by default (self-hosted: no platform verification available).
      *
@@ -97,6 +104,8 @@ const DEFAULTS: ServerConfig = {
     maxWsPayloadBytes: 10 * 1024 * 1024,
     wsRateLimitPerSecond: 50,
     exportMinIntervalMs: 10_000,
+    leaderboardCacheMs: 1000,
+    requireTradeTokenProof: false,
     trustAll: true,
 };
 
@@ -153,6 +162,13 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
         const n = Number(process.env.EXPORT_MIN_INTERVAL_MS);
         if (Number.isFinite(n) && n >= 0) config.exportMinIntervalMs = n;
     }
+    if (process.env.LEADERBOARD_CACHE_MS !== undefined) {
+        const n = Number(process.env.LEADERBOARD_CACHE_MS);
+        if (Number.isFinite(n) && n >= 0) config.leaderboardCacheMs = n;
+    }
+    if (process.env.REQUIRE_TRADE_TOKEN_PROOF !== undefined) {
+        config.requireTradeTokenProof = /^(1|true|yes|on)$/i.test(process.env.REQUIRE_TRADE_TOKEN_PROOF.trim());
+    }
 
     // normalise whatever config.json contained so a typo cannot silently weaken the server
     config.host = typeof config.host === "string" && config.host.trim() ? config.host.trim() : DEFAULTS.host;
@@ -173,6 +189,20 @@ export function loadConfig(cwd = process.cwd()): ServerConfig {
         Number.isFinite(config.exportMinIntervalMs) && config.exportMinIntervalMs >= 0
             ? config.exportMinIntervalMs
             : DEFAULTS.exportMinIntervalMs;
+    config.leaderboardCacheMs =
+        Number.isFinite(config.leaderboardCacheMs) && config.leaderboardCacheMs >= 0
+            ? Math.min(config.leaderboardCacheMs, 60_000)
+            : DEFAULTS.leaderboardCacheMs;
+    config.requireTradeTokenProof = config.requireTradeTokenProof === true;
+    config.port = Number.isFinite(config.port) && config.port >= 0 && config.port <= 65535 ? Math.trunc(config.port) : DEFAULTS.port;
+    config.chatRateLimitMs =
+        Number.isFinite(config.chatRateLimitMs) && config.chatRateLimitMs >= 0
+            ? config.chatRateLimitMs
+            : DEFAULTS.chatRateLimitMs;
+    config.chatHistorySize =
+        Number.isFinite(config.chatHistorySize) && config.chatHistorySize >= 1
+            ? Math.min(10_000, Math.trunc(config.chatHistorySize))
+            : DEFAULTS.chatHistorySize;
     // an empty key is a valid configuration (the client ships with an empty default too),
     // but both sides must agree on it
     config.saveFileKey = typeof config.saveFileKey === "string" ? config.saveFileKey : "";

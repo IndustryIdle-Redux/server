@@ -31,6 +31,8 @@ export function testConfig(overrides: Partial<ServerConfig> = {}): ServerConfig 
         maxWsPayloadBytes: 10 * 1024 * 1024,
         wsRateLimitPerSecond: 0,
         exportMinIntervalMs: 0,
+        leaderboardCacheMs: 0,
+        requireTradeTokenProof: false,
         trustAll: true,
         ...overrides,
     };
