@@ -141,6 +141,10 @@ describe("configuration defaults", () => {
 
         // with a token configured the remote deploy is fine
         expect(configWarnings(testConfig({ mods: [], host: "0.0.0.0", adminToken: "x" }))).toEqual([]);
+
+        // mods + token: the token is the credential, warn that the list does not grant admin
+        const both = configWarnings(testConfig({ mods: ["alice"], host: "0.0.0.0", adminToken: "x" }));
+        expect(both.some((w) => w.includes("ADMIN_TOKEN is configured"))).toBe(true);
     });
 
     it("keeps isMod working for the configured list and for '*'", () => {
@@ -199,13 +203,19 @@ describe("admin route authorization", () => {
         expect(good.status).toBe(200);
     });
 
-    it("still lets configured mods administer when a token is set", async () => {
+    it("does not let the spoofable mods list bypass a configured token", async () => {
         const server = await startTracked(testConfig({ mods: ["moddy"], adminToken: "s3cret" }));
-        const r = await fetch(`${server.http}/trade/remove?id=nope`, {
+        const spoofed = await fetch(`${server.http}/trade/remove?id=nope`, {
             method: "POST",
             headers: jsonHeaders("moddy"),
         });
-        expect(r.status).toBe(404); // mod path accepted
+        expect(spoofed.status).toBe(403);
+
+        const withToken = await fetch(`${server.http}/trade/remove?id=nope`, {
+            method: "POST",
+            headers: jsonHeaders("moddy", { "X-Admin-Token": "s3cret" }),
+        });
+        expect(withToken.status).toBe(404); // authorized, trade does not exist
     });
 
     it("denies non-loopback callers without a token and never trusts X-Forwarded-For", () => {

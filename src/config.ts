@@ -34,12 +34,13 @@ export interface ServerConfig {
     /** secret suffix used by the client's `signTrade`; must match the client */
     saveFileKey: string;
     /**
-     * user ids (or `"*"`) that get moderator rights (isMod, mute, remove trade).
+     * user ids (or `"*"`) that get the in-game moderator flag (chat ip visibility) and
+     * admin rights when no `adminToken` is configured.
      *
-     * ⚠️ The identity behind a moderator check is the client-supplied `X-User-Id`
-     * header / `?user=` query — it is **not authenticated**, so a moderator list is
-     * only meaningful when the operator trusts everyone who can reach the server.
-     * Use `adminToken` when you need a real credential.
+     * The identity behind a moderator check is the client-supplied `X-User-Id` header /
+     * `?user=` query — it is not authenticated, so this list is only meaningful when the
+     * operator trusts everyone who can reach the server. When `adminToken` is set, the
+     * admin REST routes require that token instead.
      */
     mods: string[];
     /**
@@ -151,6 +152,11 @@ export function configWarnings(config: ServerConfig): string[] {
         warnings.push(
             `mods is set to [${config.mods.join(", ")}] but ADMIN_TOKEN is empty: moderator rights are keyed only on the ` +
                 "client-supplied X-User-Id header, which anybody can spoof. Set ADMIN_TOKEN for a real credential."
+        );
+    } else if (config.mods.length > 0 && config.adminToken) {
+        warnings.push(
+            `mods is set to [${config.mods.join(", ")}] while ADMIN_TOKEN is configured: the admin endpoints require the ` +
+                "token; the mods list only controls the in-game moderator flag."
         );
     }
     if (!isLoopbackHost(config.host) && !config.adminToken) {

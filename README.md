@@ -37,7 +37,7 @@ in `data/db.json`; exported save dumps are written to `data/saves/`.
 | `host` | `HOST` | `127.0.0.1` | Loopback only. Exposing it on a LAN/public network requires changing it explicitly **and** setting `ADMIN_TOKEN` |
 | `dataDir` | `DATA_DIR` | `data` | Directory for `db.json` and `saves/` |
 | `saveFileKey` | `SAVE_FILE_KEY` | empty | Must match the game client's `SAVE_FILE_KEY`; both default to empty |
-| `mods` | `MODS` | `[]` | Administrator userIds; `["*"]` makes everyone an administrator (dangerous, warned at startup) |
+| `mods` | `MODS` | `[]` | Moderator userIds (in-game mod flag, and admin routes when no `ADMIN_TOKEN` is set); `["*"]` makes everyone a moderator (dangerous, warned at startup) |
 | `adminToken` | `ADMIN_TOKEN` | empty | Shared secret for the admin endpoints; when set, `/trade/remove` and `/chat/mute` require `X-Admin-Token` |
 | `chatRateLimitMs` | | `3000` | Minimum interval between chat messages per user |
 | `chatHistorySize` | | `200` | Chat history entries kept per channel |
@@ -68,11 +68,12 @@ sweep TTL, and warns about risky settings.
 The two admin routes are `POST /trade/remove?id=` (delete an order) and `POST /chat/mute?ip=&time=`
 (mute in milliseconds, 0 = unmute).
 
-- With `ADMIN_TOKEN` configured: `X-Admin-Token` must match (constant-time compare), or the caller's
-  userId must be in `mods` (compatibility; the header is spoofable, so keep `mods` empty when the
-  server is reachable by untrusted clients).
-- Without `ADMIN_TOKEN`: loopback callers keep the legacy permissive behaviour, non-loopback callers
-  get 403.
+- With `ADMIN_TOKEN` configured: `X-Admin-Token` must match (constant-time compare). The `mods` list
+  does **not** grant admin access in this mode, because it is keyed on the spoofable `X-User-Id`
+  header. It only controls the in-game moderator flag.
+- Without `ADMIN_TOKEN`: loopback callers keep the legacy permissive behaviour, non-loopback
+  configured moderators may still administer (the spoofable header is the identity). Set the token
+  when the server is reachable by untrusted clients.
 - Loopback is decided from the socket's real remote address, never from `X-Forwarded-For`.
 
 To expose the server: set `host` to `0.0.0.0` (or `::`), set `ADMIN_TOKEN`, keep `mods` empty, and put

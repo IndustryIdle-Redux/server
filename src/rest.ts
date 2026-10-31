@@ -27,9 +27,8 @@
  * admin routes (`/trade/remove`, `/chat/mute`) are therefore guarded like this:
  *
  *   - `adminToken` configured → the caller must send it in `X-Admin-Token` (constant-time
- *     compare) **or** be listed in `mods`. Mods stay usable so existing deployments that
- *     relied on `mods: ["*"]` keep working — but note that the moderator check itself is
- *     keyed on the spoofable `X-User-Id`, so `ADMIN_TOKEN` is the only real credential.
+ *     compare). The `mods` list does not grant admin access in this mode: it is keyed on
+ *     the spoofable `X-User-Id` header and the token is the only real credential.
  *   - `adminToken` **not** configured → legacy behaviour is kept for **loopback** callers
  *     (the local operator) and remote callers get 403. Loopback is decided from the socket
  *     address, never from `X-Forwarded-For` (which is client controlled).
@@ -113,10 +112,9 @@ export function constantTimeEqual(a: string, b: string): boolean {
  */
 export function isAdminAuthorized(req: IncomingMessage, hub: Hub, config: ServerConfig, userId: string): boolean {
     if (config.adminToken) {
-        const provided = headerString(req.headers["x-admin-token"]);
-        if (constantTimeEqual(provided, config.adminToken)) return true;
-        // configured mods keep working with an admin token set (backwards compatibility)
-        return hub.isMod(userId);
+        // A configured token is the only credential for admin routes. The mods list is keyed
+        // on the spoofable X-User-Id header and must not be able to bypass it.
+        return constantTimeEqual(headerString(req.headers["x-admin-token"]), config.adminToken);
     }
     // no admin token: the local operator (genuine loopback) keeps the legacy behaviour …
     if (isLoopbackAddress(req.socket.remoteAddress)) return true;
@@ -128,7 +126,7 @@ export function isAdminAuthorized(req: IncomingMessage, hub: Hub, config: Server
 function adminDenied(config: ServerConfig): string {
     return config.adminToken
         ? "invalid or missing X-Admin-Token"
-        : "admin endpoints are restricted to loopback callers; set ADMIN_TOKEN (or add the user to mods) to administer the server remotely";
+        : "admin endpoints are restricted to loopback callers; set ADMIN_TOKEN to administer the server remotely";
 }
 
 /**
